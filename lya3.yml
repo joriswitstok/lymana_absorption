@@ -1,5 +1,5 @@
 # python environment in python 3
-name: elf3
+name: lya3
 channels:
   - astropy
   - conda-forge
