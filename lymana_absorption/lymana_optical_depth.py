@@ -236,7 +236,7 @@ def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="co
         tau += tau_integral(wl_obs=wl_obs_array, z=z, x_HI=x_HI, n_H=n_H, T=T, cosmo=cosmo, approximation=approximation)
 
     if small_bubble:
-        # Second part of the integral, through the neutral IGM (assume x_HI = 1, Δ = 1, T = 1 K)
+        # Second part of the integral, through the neutral IGM (assume Δ = 1, T = 1 K)
         z = np.linspace(z_reion, z_ion, 10000)
         
         if hasattr(wl_obs_array, "__len__"):
