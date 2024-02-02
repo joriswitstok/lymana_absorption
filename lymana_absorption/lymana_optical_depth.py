@@ -152,8 +152,43 @@ def tau_integral(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi2006")
     
     return np.trapz(dldz * x_HI * n_H * sigma_alpha(x, T, b_turb=0.0, approximation=approximation), x=z)
 
+def tau_integral_vec(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi2006"):
+    """
+    
+    Lyman-alpha optical depth integral at observed wavelength `wl_obs` given a redshift range `z`,
+    neutral hydrogen fraction `x_HI`, hydrogen density `n_H`, temperature `T`, and cosmology `cosmo`
+    This is a vectorised version of `tau_integral`, checked for a random sample of inputs with
+    `np.allclose` to give the same results as `tau_integral`.
+    This is faster than `tau_integral` when the number of steps is <5,000 (same speed otherwise).
+    
+    
+    """
+
+    z    = np.atleast_1d(z)
+    x_HI = np.atleast_1d(x_HI)
+    n_H  = np.atleast_1d(n_H)
+    assert (len(x_HI)==1) or (len(z)==len(x_HI)), (
+        f'Maldito, {x_HI=} must be scalar or same len as {z=}')
+    assert (len(n_H)==1) or (len(z)==len(n_H)), (
+        f'Maldito, {n_H=} must be scalar or same len as {z=}')
+    assert not hasattr(T, "__len__"), f'You goaty goose, {T=} must be a scalar'
+    
+    # Rest-frame wavelength (in Angstrom) and frequency (in Hz) at the various redshifts
+    wl_emit = wl_obs[:, None] / (1.0 + z[None, :])
+    
+    # Dimensionless Doppler parameter (note it is assumed the IGM does not have a turbulent component)
+    x = Doppler_x(wl_emit=wl_emit, T=T, b_turb=0.0)
+
+    dldz = c / (cosmo.H(z).to("Hz").value * (1.0 + z))
+    
+    return np.trapz(
+        dldz[None, :] * x_HI[None, :] * n_H[None, :]
+        * sigma_alpha(x, T, b_turb=0.0, approximation=approximation),
+        x=z, axis=1)
+
 def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="constant", T=1e4, x_HI_global=1.0,
-            cosmo=None, z_reion=5.0, f_H=0.76, H0=70.0, Om0=0.3, Ob0=0.05, approximation="Tasitsiomi2006"):
+            cosmo=None, z_reion=5.0, f_H=0.76, H0=70.0, Om0=0.3, Ob0=0.05, approximation="Tasitsiomi2006",
+            use_vector=False):
     """
     
     Calculates the optical depth of a Lyman-alpha photon travelling through an
@@ -187,6 +222,9 @@ def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="co
         Matter density parameter at z = 0.
     Ob0 : float, optional
         Baryonic matter density parameter at z = 0.
+    use_vector : bool, optional
+        If True, replace `tau_integral` with `tau_integral_vec`; faster
+        under some circumstances.
 
     Returns
     ----------
@@ -229,7 +267,22 @@ def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="co
     if x_HI_profile == "quadratic":
         x_HI = x_HI * (l / 0.1)**2
     n_H = Delta * n_H_bar_0 * (1.0 + z)**3
-    
+
+    if use_vector:
+        tau += tau_integral_vec(
+            wl_obs=wl_obs_array, z=z, x_HI=x_HI, n_H=n_H, T=T, cosmo=cosmo,
+            approximation=approximation)
+        if small_bubble:
+            # Second part of the integral, through the neutral IGM (assume x_HI = 1, Δ = 1, T = 1 K)
+            z = np.linspace(z_reion, z_ion, n_z_bubble)
+        
+            tau += tau_integral_vec(
+                wl_obs=wl_obs_array, z=z, x_HI=x_HI_global,
+                n_H=n_H_bar_0*(1.0 + z)**3, T=1, cosmo=cosmo, approximation=approximation)
+
+        # Return optical depth for vectorised calls.
+        return tau
+
     if hasattr(wl_obs_array, "__len__"):
         tau += np.array([tau_integral(wl_obs=wl_obs, z=z, x_HI=x_HI, n_H=n_H, T=T, cosmo=cosmo, approximation=approximation) for wl_obs in wl_obs_array])
     else:
