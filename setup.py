@@ -30,6 +30,7 @@ setup(name='lymana_absorption',
         'spectres>=2.2.0',
         'corner',
         'seaborn',
+        'pymultinest',
       ],
       python_requires='>=3.8',
       #entry_points={
