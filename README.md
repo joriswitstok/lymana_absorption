@@ -1,5 +1,8 @@
 # Lyman-alpha absorption fitting
 
+# This code is an experimental version of the original version lymana_absorption and will be merged into main.
+Please do not use, thank you.
+
 ## Contents
 1. [Description](#Description)
 
