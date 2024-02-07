@@ -81,7 +81,7 @@ class MN_IGM_DLA_solver(Solver):
             print(*["{:<5}\t{:<30}\t{:<20}\t{:<20}\t{:<20}".format(*x) for x in zip(range(1, self.n_dims+1), self.params, min_params, mean_params, max_params)], sep='\n')
             print("\n{:<5}\t{:<30}\t{:<20}\t{:<20}\t{:<20}\n".format('', "Log-likelihood", self.LogLikelihood(min_params), self.LogLikelihood(mean_params), self.LogLikelihood(max_params)))
         
-        if plot_setup and mpi_rank == 0:
+        if plot_setup and self.mpi_rank == 0:
             plt, sns = import_matplotlib()
             if self.mpl_style:
                 plt.style.use(self.mpl_style)
@@ -91,10 +91,10 @@ class MN_IGM_DLA_solver(Solver):
             
             z_fid = 0.5*(self.redshift["min_z"]+self.redshift["max_z"]) if self.redshift["vary"] else self.redshift["fixed_redshift"]
             ax.plot(np.nan, np.nan, color="None", label=r"Fiducial $z = {:.6g}$:".format(z_fid))
-            ax.errorbar(self.wl_emit_intrinsic, self.flux_intrinsic/(1.0 + z_fid),
+            ax.errorbar(self.wl_emit_intrinsic*(1.0 + z_fid), self.flux_intrinsic/(1.0 + z_fid),
                         yerr=[self.flux_intrinsic_lowerr/(1.0 + z_fid), self.flux_intrinsic_lowerr/(1.0 + z_fid)] if self.model_uncertainty else None,
                         color='k', alpha=0.8, label="Intrinsic")
-            ax.errorbar(self.wl_obs / (1.0 + z_fid), self.flux, yerr=self.flux_err, linestyle="None", marker='o', markersize=0.5, color='k', alpha=0.8,
+            ax.errorbar(self.wl_obs, self.flux, yerr=self.flux_err, linestyle="None", marker='o', markersize=0.5, color='k', alpha=0.8,
                         label="Measurements")
             
             if self.add_DLA:
@@ -104,24 +104,24 @@ class MN_IGM_DLA_solver(Solver):
                             alpha=0.8, label=r"$N_\mathrm{{HI}} = 10^{{{:.1f}}} \, \mathrm{{cm^{{-2}}}}$".format(logN_HI))
 
             wl_emit_range = np.linspace(800, 1800, 200)
-            for z, ls in zip([self.redshift["min_z"], self.redshift["max_z"]] if self.redshift["vary"] else [self.redshift["fixed_redshift"]], ['--', ':']):
+            for z, ls in zip([z_fid, self.redshift["min_z"], self.redshift["max_z"]] if self.redshift["vary"] else [self.redshift["fixed_redshift"]], ['-', '--', ':']):
                 wl_obs_range = wl_emit_range * (1.0 + z)
                 self.set_wl_arrays(wl_obs_range)
                 
                 ax.plot(np.nan, np.nan, color="None", alpha=0, label=r"$z = {:.6g}$:".format(z))
                 z_list = [z] if self.redshift["vary"] else []
                 
-                label = ", ".join([r"{} = {}$".format(l[:-1], r[0]) for r, p, l in zip(self.theta_range, self.params, self.math_labels) if p != "redshift"])
-                ax.plot(wl_emit_range, self.get_profile(z_list + [r[0] for r, p in zip(self.theta_range, self.params) if p != "redshift"]), linestyle=ls, alpha=0.8, label=label)
-                label = ", ".join([r"{} = {}$".format(l[:-1], 0.5*(r[0]+r[1])) for r, p, l in zip(self.theta_range, self.params, self.math_labels) if p != "redshift"])
-                ax.plot(wl_emit_range, self.get_profile(z_list + [0.5*(r[0]+r[1]) for r, p in zip(self.theta_range, self.params) if p != "redshift"]), linestyle=ls, alpha=0.8, label=label)
-                label = ", ".join([r"{} = {}$".format(l[:-1], r[1]) for r, p, l in zip(self.theta_range, self.params, self.math_labels) if p != "redshift"])
-                ax.plot(wl_emit_range, self.get_profile(z_list + [r[1] for r, p in zip(self.theta_range, self.params) if p != "redshift"]), linestyle=ls, alpha=0.8, label=label)
+                label = ", ".join(["Model"] + [r"{} = {}$".format(l[:-1], r[0]) for r, p, l in zip(self.theta_range, self.params, self.math_labels) if p != "redshift"])
+                ax.plot(wl_obs_range, self.get_profile(z_list + [r[0] for r, p in zip(self.theta_range, self.params) if p != "redshift"]), linestyle=ls, alpha=0.8, label=label)
+                label = ", ".join(["Model"] + [r"{} = {}$".format(l[:-1], 0.5*(r[0]+r[1])) for r, p, l in zip(self.theta_range, self.params, self.math_labels) if p != "redshift"])
+                ax.plot(wl_obs_range, self.get_profile(z_list + [0.5*(r[0]+r[1]) for r, p in zip(self.theta_range, self.params) if p != "redshift"]), linestyle=ls, alpha=0.8, label=label)
+                label = ", ".join(["Model"] + [r"{} = {}$".format(l[:-1], r[1]) for r, p, l in zip(self.theta_range, self.params, self.math_labels) if p != "redshift"])
+                ax.plot(wl_obs_range, self.get_profile(z_list + [r[1] for r, p in zip(self.theta_range, self.params) if p != "redshift"]), linestyle=ls, alpha=0.8, label=label)
 
-            ax.set_xlabel(r"$\lambda_\mathrm{emit} \, (\mathrm{\AA})$")
+            ax.set_xlabel(r"$\lambda_\mathrm{obs} \, (\mathrm{\AA})$")
             ax.set_ylabel(r"$F_\lambda$")
 
-            ax.set_xlim(1100, 1500)
+            ax.set_xlim(1100*(1.0 + z_fid), 1500*(1.0 + z_fid))
 
             ax.legend()
             
@@ -380,7 +380,7 @@ class MN_IGM_DLA_solver(Solver):
     
     def IGM_damping_transmission(self, wl_obs_array, theta):
         assert self.IGM_damping_interp is not None
-        wl_emit_array = wl_obs_array / (1.0 + theta[self.params.index("redshift")] if self.redshift["vary"] else self.redshift["fixed_redshift"])
+        wl_emit_array = wl_obs_array / (1.0 + (theta[self.params.index("redshift")] if self.redshift["vary"] else self.redshift["fixed_redshift"]))
         points = np.moveaxis(np.meshgrid(wl_emit_array, *[[theta[self.params.index(p)]] for p in self.IGM_params if p != "rest_wavelength"], indexing="ij"), 0, -1).squeeze()
         
         return self.IGM_damping_interp(points)
@@ -392,8 +392,8 @@ class MN_IGM_DLA_solver(Solver):
         wl = np.min(wl_obs) - 15 * np.min(wl_obs) / np.min(self.convolve["resolution_curve"])
         
         # Require a spectral resolution of at least R_min, need to increase the number of wavelength bins
-        dl_emit = self.wl_obs / np.interp(self.wl_obs, self.convolve["wl_obs_res"], self.convolve["resolution_curve"])
-        self.n_res = 3.0 * max(1.0, *dl_emit/(1215.6701/self.convolve.get("R_min", 1000.0)))
+        dl_obs = self.wl_obs / np.interp(self.wl_obs, self.convolve["wl_obs_res"], self.convolve["resolution_curve"])
+        self.n_res = 3.0 * max(1.0, *dl_obs/(1215.6701/self.convolve.get("R_min", 1000.0)))
         
         while wl < np.max(wl_obs) + 15 * np.max(wl_obs) / np.min(self.convolve["resolution_curve"]):
             wl_obs_bin_edges.append(wl)
