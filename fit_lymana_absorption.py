@@ -311,7 +311,7 @@ class MN_IGM_DLA_solver(Solver):
                     if not os.path.isfile(self.add_IGM["grid_file_name"]) and verbose:
                         print("IGM damping-wing transmission curve(s) will be calculated and saved to {}...".format(self.add_IGM["grid_file_name"].split('/')[-1]))
                     else:
-                        grid_file_npz = np.load(self.add_IGM.get("grid_file_name"))
+                        grid_file_npz = np.load(self.add_IGM["grid_file_name"])
                         grid_points = [grid_file_npz[p + "_array"] for p in self.IGM_params]
                         if np.all([s == grid_points[si].size for si, s in enumerate(array_sizes)]) and np.all([np.allclose(p, gp) for p, gp in zip(points, grid_points)]):
                             calc_curves = False
