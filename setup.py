@@ -7,7 +7,7 @@ def readme():
         return(file.read())
 
 setup(name='lymana_absorption',
-      version='1.0',
+      version='0.1',
       description='Spectral fitting of Lyman alpha absorption',
       long_description=readme(),
       classifiers=[
