@@ -8,7 +8,6 @@ dependencies:
   - numpy
   - scipy
   - astropy
-  - emcee
   - corner
   - matplotlib
   - seaborn

@@ -5,6 +5,7 @@ __pycache__/*
 build/
 lymana_absorption.egg-info/
 lymana_absorption/aux/__pycache__/
+lymana_absorption/aux/GS-z13*
 lymana_absorption/examples/*.pdf
 lymana_absorption/examples/*.npz
 lymana_absorption/examples/MultiNest*

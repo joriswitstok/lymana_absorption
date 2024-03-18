@@ -25,7 +25,6 @@ Running the code requires the following Python packages:
 - `numpy`
 - `scipy`
 - `astropy`
-- `emcee`
 - `mpi4py`
 - `pymultinest`
 - `spectres`
