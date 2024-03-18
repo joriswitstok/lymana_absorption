@@ -5,7 +5,7 @@
 
 ## <a name="Description"></a>Description
 
-This is a code that uses the pymultinest package ([Feroz et al. 2009](); [Buchner et al. 2014](https://ui.adsabs.harvard.edu/abs/2014A%26A...564A.125B/abstract)) to fit Lyman-alpha (Lyα) damping-wing absorption, both from the IGM and local damped-Lyα absorbing (DLA) systems. The main functionality has been described in [D'Eugenio et al. (2023)](https://ui.adsabs.harvard.edu/abs/2023arXiv231109908D/abstract). Below, its usage is illustrated with examples.
+This is a code that uses the pymultinest package ([Feroz et al. 2009](); [Buchner et al. 2014](https://ui.adsabs.harvard.edu/abs/2014A%26A...564A.125B/abstract)) to calculate and fit Lyman-alpha (Lyα) damping-wing absorption, both from the IGM and local damped-Lyα absorbing (DLA) systems. The main functionality is described in [D'Eugenio et al. (2023)](https://ui.adsabs.harvard.edu/abs/2023arXiv231109908D/abstract) and [Hainline et al. (2024)](). Below, its usage is illustrated with examples.
 
 ## <a name="Installation"></a>Installation and setup
 
@@ -52,7 +52,7 @@ By default, the terminal will indicate the environment is active by showing a pr
 (lya3) $ 
 ```
 
-The `lymana_absorption` code is then easily installed via `pip`:
+The `lymana_absorption` code is then easily installed via `pip` (`pip3`). NB: here, the `pip` executable related to the `conda` environment should be used: this can be verified `which pip` (`which pip3`):
 
 ```
 (lya3) $ pip3 install lymana_absorption
@@ -77,4 +77,4 @@ If it has finished successfully, several figures illustrating IGM and DLA transm
 
 ### <a name="Running_the_fitting_script"></a>Running a test script to fit observed damping-wing absorption
 
-A more advanced example usage case is illustrated by running the file `example_fit.py` (again located in the `examples` folder). This script performs a fitting routine to the observed spectrum of GS-z13 (as in [Hainline et al. 2024](https://ui.adsabs.harvard.edu/abs/2023arXiv231109908D/abstract)), given a resolution curve and an intrinsic model spectrum.
+A more advanced example usage case is illustrated by running the file `example_fit.py` (again located in the `examples` folder). This script performs a fitting routine to the observed spectrum of GS-z13 (as in [Hainline et al. 2024]()), given a resolution curve and an intrinsic model spectrum.
