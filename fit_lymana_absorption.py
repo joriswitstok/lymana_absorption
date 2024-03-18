@@ -164,7 +164,7 @@ class MN_IGM_DLA_solver(Solver):
             
             if plot_corner:
                 if figsize is not None:
-                    fig = plt.figure(figsize=(8.27/2, 8.27/2))
+                    fig = plt.figure(figsize=(8.27*self.n_dims/4, 8.27*self.n_dims/4))
                 fig = corner.corner(np.transpose(data), labels=self.params, bins=bins, range=self.theta_range,
                                     smooth=1, smooth1d=1, fig=fig, color=color, show_titles=False)
 
@@ -411,7 +411,7 @@ class MN_IGM_DLA_solver(Solver):
         ranges = []
 
         if self.redshift["vary"]:
-            ranges.append([self.redshift["min_z"], self.redshift["max_z"]])
+            ranges.append([float(self.redshift["min_z"]), float(self.redshift["max_z"])])
             self.params.append("redshift")
             self.labels.append("Redshift ")
             self.math_labels.append(r"$z$")
@@ -420,28 +420,28 @@ class MN_IGM_DLA_solver(Solver):
         self.z_max = self.redshift["max_z"] if self.redshift["vary"] else self.redshift["fixed_redshift"]
 
         if self.add_DLA:
-            ranges.append([self.add_DLA["min_logN_HI"], self.add_DLA["max_logN_HI"]])
+            ranges.append([float(self.add_DLA["min_logN_HI"]), float(self.add_DLA["max_logN_HI"])])
             self.params.append("logN_HI")
             self.labels.append("HI column density\n")
             self.math_labels.append(r"$\log_{{10}} \left( N_\mathrm{{HI}} \, (\mathrm{{cm^{{-2}}}}) \right)$")
             if self.add_DLA["vary_redshift"]:
-                ranges.append([self.add_DLA["min_z"], self.add_DLA["max_z"]])
+                ranges.append([float(self.add_DLA["min_z"]), float(self.add_DLA["max_z"])])
                 self.params.append("redshift_DLA")
                 self.labels.append("DLA redshift ")
                 self.math_labels.append(r"$z_\mathrm{{DLA}}$")
             if self.add_DLA["vary_b_turb"]:
-                ranges.append([self.add_DLA["min_b_turb"], self.add_DLA["max_b_turb"]])
+                ranges.append([float(self.add_DLA["min_b_turb"]), float(self.add_DLA["max_b_turb"])])
                 self.params.append("b_turb")
                 self.labels.append("DLA turbulent velocity\n")
                 self.math_labels.append(r"$b_\mathrm{{turb, \, DLA}} \, (\mathrm{{km \, s^{{-1}}}})$")
         if self.add_IGM:
             if self.add_IGM["vary_R_ion"]:
-                ranges.append([self.add_IGM["min_R_ion"], self.add_IGM["max_R_ion"]])
+                ranges.append([float(self.add_IGM["min_R_ion"]), float(self.add_IGM["max_R_ion"])])
                 self.params.append("R_ion")
                 self.labels.append("Ionised bubble radius ")
                 self.math_labels.append(r"$R_\mathrm{{ion}} \, (\mathrm{{pMpc}})$")
             elif self.add_IGM["vary_x_HI_global"]:
-                ranges.append([self.add_IGM["min_x_HI_global"], self.add_IGM["max_x_HI_global"]])
+                ranges.append([float(self.add_IGM["min_x_HI_global"]), float(self.add_IGM["max_x_HI_global"])])
                 self.params.append("x_HI_global")
                 self.labels.append("IGM HI fraction ")
                 self.math_labels.append(r"$\bar{{x}}_\mathrm{{HI}}$")
