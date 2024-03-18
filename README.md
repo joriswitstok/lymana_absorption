@@ -81,7 +81,7 @@ $ conda activate lya3
 
 If it has finished successfully, several figures illustrating IGM and DLA transmission curves will have been saved in the `examples` folder. For instance, it will plot a comparison between various IGM and DLA transmission curves for a source at z = 9:
 <br>
-<img src="/lymana_absorption/lymana_absorption/examples/IGM_DLA_absorption.png" width="100%">
+<img src="/lymana_absorption/examples/IGM_DLA_absorption.png" width="100%">
 <br>
 
 ### <a name="Running_the_fitting_script"></a>Running a test script to fit observed damping-wing absorption
