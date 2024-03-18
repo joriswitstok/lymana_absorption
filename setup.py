@@ -31,6 +31,7 @@ setup(name='lymana_absorption',
         'corner',
         'seaborn',
         'pymultinest',
+        'mpi4py',
       ],
       python_requires='>=3.8',
      )

@@ -18,7 +18,7 @@ from spectres import spectres
 
 from .mean_IGM_absorption import igm_absorption
 from .lymana_optical_depth import tau_IGM, tau_DLA
-from .aux.stats import hpd_grid
+from .stats import hpd_grid
 
 def import_matplotlib():
     from matplotlib import pyplot as plt

@@ -9,7 +9,6 @@ dependencies:
   - scipy
   - astropy
   - emcee
-  - pymultinest
   - corner
   - matplotlib
   - seaborn
