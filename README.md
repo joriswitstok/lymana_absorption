@@ -52,10 +52,17 @@ By default, the terminal will indicate the environment is active by showing a pr
 (lya3) $ 
 ```
 
-The `lymana_absorption` code is then easily installed via `pip` (`pip3`). NB: here, the `pip` executable related to the `conda` environment should be used: this can be verified `which pip` (`which pip3`):
+After navigating into the installation folder (see [Cloning](Cloning)), the `lymana_absorption` code is then installed into your `python` distribution via `pip` (`pip3`). NB: the `pip` executable related to the `conda` environment (or any other `python` distribution) should be used here - to verify which `pip` executable is active, use `which pip`. For example:
 
 ```
-(lya3) $ pip3 install lymana_absorption
+(lya3) $ which pip3
+pip3 is /Users/Joris/anaconda3/envs/lya3/bin/pip3
+(lya3) $ cd lymana_absorption
+(lya3) $ ls
+LICENSE				lya3.yml			setup.py
+README.md			lymana_absorption
+build				lymana_absorption.egg-info
+(lya3) $ pip3 install .
 ```
 
 ## <a name="Example_usage"></a>Example usage
