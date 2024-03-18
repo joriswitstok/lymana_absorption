@@ -50,7 +50,6 @@ By default, the terminal will indicate the environment is active by showing a pr
 ```
 (lya3) $ 
 ```
-```
 
 The code is then easily installed via `pip`:
 
