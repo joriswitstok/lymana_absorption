@@ -1,11 +1,14 @@
 # Lyman-alpha absorption fitting
+<br>
+<img src="/IGM_DLA_absorption.png" width="100%">
+<br>
 
 ## Contents
 1. [Description](#Description)
 
 ## <a name="Description"></a>Description
 
-This is a code that uses the pymultinest package ([Feroz et al. 2009](); [Buchner et al. 2014](https://ui.adsabs.harvard.edu/abs/2014A%26A...564A.125B/abstract)) to fit Lyman-alpha (Lyα) damping-wing absorption, both from the IGM and local damped-Lyα absorbing (DLA) systems. The main functionality has been described in [D'Eugenio et al. (2023)](https://ui.adsabs.harvard.edu/abs/2023arXiv231109908D/abstract). Below, its usage is illustrated with an example.
+This is a code that uses the pymultinest package ([Feroz et al. 2009](); [Buchner et al. 2014](https://ui.adsabs.harvard.edu/abs/2014A%26A...564A.125B/abstract)) to fit Lyman-alpha (Lyα) damping-wing absorption, both from the IGM and local damped-Lyα absorbing (DLA) systems. The main functionality has been described in [D'Eugenio et al. (2023)](https://ui.adsabs.harvard.edu/abs/2023arXiv231109908D/abstract). Below, its usage is illustrated with examples.
 
 ## <a name="Installation"></a>Installation and setup
 
@@ -24,6 +27,7 @@ Running the code requires the following Python packages:
 - `scipy`
 - `astropy`
 - `emcee`
+- `mpi4py`
 - `pymultinest`
 - `spectres`
 - `corner`
@@ -31,7 +35,7 @@ Running the code requires the following Python packages:
 - `seaborn`
 - `mock`
   
-One way to ensure all these modules are installed is via the file `lya3.yml` provided in the main folder, which can be used to create an `conda` environment in Python 3 (see the `conda` [documentation on environments](https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html) for more details) containing all the required packages.
+Most of these modules are easily installed via the file `lya3.yml` provided in the main folder, which can be used to create an `conda` environment in Python 3 (see the `conda` [documentation on environments](https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html) for more details) containing all the required packages. However, the `lymana_absorption` code and several MPI-related packages (`mpi4py` and `pymultinest`) should be installed via `pip` to ensure properly linking to a local MPI installation (if available).
 
 If you have `conda` installed and set up as a `python` distribution, this can be achieved with:
 
@@ -51,7 +55,7 @@ By default, the terminal will indicate the environment is active by showing a pr
 (lya3) $ 
 ```
 
-The code is then easily installed via `pip`:
+The `lymana_absorption` code is then easily installed via `pip`:
 
 ```
 (lya3) $ pip3 install lymana_absorption
