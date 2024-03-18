@@ -16,9 +16,9 @@ from scipy.ndimage import median_filter, gaussian_filter1d
 from scipy.interpolate import RegularGridInterpolator
 from spectres import spectres
 
-from lymana_absorption.mean_IGM_absorption import igm_absorption
-from lymana_absorption.lymana_optical_depth import tau_IGM, tau_DLA
-from aux.stats import hpd_grid
+from .mean_IGM_absorption import igm_absorption
+from .lymana_optical_depth import tau_IGM, tau_DLA
+from .aux.stats import hpd_grid
 
 def import_matplotlib():
     from matplotlib import pyplot as plt
