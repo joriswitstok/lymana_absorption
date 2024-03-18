@@ -2,8 +2,8 @@
 
 ## Contents
 1. [Description](#Description)
-1. [Installation and setup](#Installation)
-1. [Example usage](#Example_usage)
+2. [Installation and setup](#Installation)
+3. [Example usage](#Example_usage)
 
 ## <a name="Description"></a>Description
 
