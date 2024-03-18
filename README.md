@@ -2,6 +2,8 @@
 
 ## Contents
 1. [Description](#Description)
+1. [Installation and setup](#Installation)
+1. [Example usage](#Example_usage)
 
 ## <a name="Description"></a>Description
 
@@ -32,9 +34,9 @@ Running the code requires the following Python packages:
 - `seaborn`
 - `mock`
   
-Most of these modules are easily installed via the file `lya3.yml` provided in the main folder, which can be used to create an `conda` environment in Python 3 (see the `conda` [documentation on environments](https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html) for more details) containing all the required packages. However, the `lymana_absorption` code and several MPI-related packages (`mpi4py` and `pymultinest`) should be installed via `pip` to ensure properly linking to a local MPI installation (if available).
+Most of these modules are easily installed via the file `lya3.yml` provided in the main folder, which can be used to create an `conda` environment in Python 3 that contains all the required packages (see the `conda` [documentation on environments](https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html) for more details). However, the `lymana_absorption` code and several MPI-related packages (`mpi4py` and `pymultinest`) should be installed via `pip` to ensure properly linking to a local MPI installation (if using MPI functionality).
 
-If you have `conda` installed and set up as a `python` distribution, this can be achieved with:
+If you have `conda` installed and set up as a `python` distribution, creating an environment can be achieved with:
 
 ```
 conda env create -f lya3.yml
@@ -52,7 +54,7 @@ By default, the terminal will indicate the environment is active by showing a pr
 (lya3) $ 
 ```
 
-After navigating into the installation folder (see [Cloning](Cloning)), the `lymana_absorption` code is then installed into your `python` distribution via `pip` (`pip3`). NB: the `pip` executable related to the `conda` environment (or any other `python` distribution) should be used here - to verify which `pip` executable is active, use `which pip`. For example:
+After navigating into the installation folder (see [Cloning](#Cloning)), the `lymana_absorption` code is then installed into your `python` distribution via `pip` (`pip3`). NB: the `pip` executable related to the `conda` environment (or any other `python` distribution) should be used here - to verify which `pip` executable is active, use `which pip`. For example:
 
 ```
 (lya3) $ which pip3
