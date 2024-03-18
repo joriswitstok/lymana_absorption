@@ -7,7 +7,7 @@ def readme():
         return(file.read())
 
 setup(name='lymana_absorption',
-      version='0.0',
+      version='1.0',
       description='Spectral fitting of Lyman alpha absorption',
       long_description=readme(),
       classifiers=[
@@ -17,25 +17,20 @@ setup(name='lymana_absorption',
         'Programming Language :: Python :: 3',
         'Topic :: Scientific/Engineering :: Astronomy',
       ],
-      url='https://github.com/fdeugenio/nirspecxf',
+      url='https://github.com/joriswitstok/lymana_absorption/',
       author='Joris Witstok',
-      author_email='tbd',
+      author_email='jnw30@cam.ac.uk',
       license='MIT',
       packages=find_packages(),
       install_requires=[
-        'matplotlib==3.5.3',
-        'numpy>=1.23.2',
-        'scipy>=1.9.0',
-        'astropy>=5.1',
+        'matplotlib>=3.5.3',
+        'numpy>=1.21.6',
+        'scipy>=1.10.1',
+        'astropy>=5.2',
         'spectres>=2.2.0',
         'corner',
         'seaborn',
         'pymultinest',
       ],
       python_requires='>=3.8',
-      #entry_points={
-      #  'console_scripts': [
-      #      'nirspecxf      = nirspecxf.samisimsig_script:main',
-      #      ],
-      #},
      )
