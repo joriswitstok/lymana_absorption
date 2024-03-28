@@ -33,7 +33,7 @@ def import_corner():
 
 class MN_IGM_DLA_solver(Solver):
     def __init__(self, wl_emit_intrinsic, flux_intrinsic, wl_obs, flux, flux_err, redshift, add_IGM={}, add_DLA={}, convolve={},
-                    flux_intrinsic_lowerr=None, flux_intrinsic_uperr=None, print_setup=True, plot_setup=False, mpl_style=None, verbose=True,
+                    print_setup=True, plot_setup=False, mpl_style=None, verbose=True,
                     mpi_run=False, mpi_comm=None, mpi_rank=0, mpi_ncores=1, mpi_synchronise=None, **solv_kwargs):
         self.mpi_run = mpi_run
         self.mpi_comm = mpi_comm
@@ -51,13 +51,12 @@ class MN_IGM_DLA_solver(Solver):
         # Intrinsic wavelength and flux (both in rest frame to allow variation in redshift)
         self.wl_emit_intrinsic = wl_emit_intrinsic # Angstrom
         self.flux_intrinsic = flux_intrinsic # in units of F_λ
-        self.flux_intrinsic_lowerr = flux_intrinsic_lowerr # in units of F_λ
-        self.flux_intrinsic_uperr = flux_intrinsic_uperr # in units of F_λ
-        self.model_uncertainty = self.flux_intrinsic_lowerr is not None and self.flux_intrinsic_uperr is not None
 
         # Observed wavelength and flux
         self.flux = flux # same units of F_λ as the intrinsic spectrum
         self.flux_err = flux_err # same units of F_λ as the intrinsic spectrum
+        # Is error is given as inverse covariance matrix?
+        self.invcov = self.flux_err.ndim == 2
         
         # Information on model parameters
         self.redshift = redshift
@@ -92,7 +91,6 @@ class MN_IGM_DLA_solver(Solver):
             z_fid = 0.5*(self.redshift["min_z"]+self.redshift["max_z"]) if self.redshift["vary"] else self.redshift["fixed_redshift"]
             ax.plot(np.nan, np.nan, color="None", label=r"Fiducial $z = {:.6g}$:".format(z_fid))
             ax.errorbar(self.wl_emit_intrinsic*(1.0 + z_fid), self.flux_intrinsic/(1.0 + z_fid),
-                        yerr=[self.flux_intrinsic_lowerr/(1.0 + z_fid), self.flux_intrinsic_lowerr/(1.0 + z_fid)] if self.model_uncertainty else None,
                         color='k', alpha=0.8, label="Intrinsic")
             ax.errorbar(self.wl_obs, self.flux, yerr=self.flux_err, linestyle="None", marker='o', markersize=0.5, color='k', alpha=0.8,
                         label="Measurements")
@@ -164,9 +162,14 @@ class MN_IGM_DLA_solver(Solver):
             
             if plot_corner:
                 if figsize is not None:
-                    fig = plt.figure(figsize=(8.27*self.n_dims/4, 8.27*self.n_dims/4))
-                fig = corner.corner(np.transpose(data), labels=self.params, bins=bins, range=self.theta_range,
-                                    smooth=1, smooth1d=1, fig=fig, color=color, show_titles=False)
+                    fig = plt.figure(figsize=(8.27/2, 8.27/2))
+                if self.n_dims > 1:
+                    fig = corner.corner(np.transpose(data), labels=self.params, bins=bins, range=self.theta_range,
+                                        smooth=1, smooth1d=1, fig=fig, color=color, show_titles=False)
+                else:
+                    ax = fig.add_subplot(fig.add_gridspec(nrows=2, ncols=1, hspace=0, height_ratios=[1, 0])[0, :])
+                    hist, bin_edges = np.histogram(data[0], bins=bins[0], range=self.theta_range[0])
+                    ax.plot(0.5*(bin_edges[1:]+bin_edges[:-1]), gaussian_filter1d(hist, sigma=1), drawstyle="steps-mid", color=color)
 
                 # Extract the axes
                 axes_c = np.array(fig.axes).reshape((self.n_dims, self.n_dims))
@@ -175,7 +178,7 @@ class MN_IGM_DLA_solver(Solver):
                     for ci in range(ri+1):
                         axes_c[ri, ci].set_axisbelow(False)
                 
-                for ci in range(self.n_dims):
+                for ci in range(self.n_dims): 
                     axes_c[-1, ci].set_xlabel(self.labels[ci] + self.math_labels[ci])
                     for ax in axes_c[:, ci]:
                         ax.set_xlim(self.theta_range[ci])
@@ -458,17 +461,13 @@ class MN_IGM_DLA_solver(Solver):
         
         return cube
 
-    def get_profile(self, theta, model_uncertainty=False):
+    def get_profile(self, theta):
         z = theta[self.params.index("redshift")] if self.redshift["vary"] else self.redshift["fixed_redshift"]
         wl_emit_model = self.wl_obs_model / (1.0 + z) # in Angstrom
         
         # Convert intrinsic flux density between the rest frame, as provided, and the observed frame, in which the
         # flux density in units of F_λ decreases by a factor (1+z), while the wavelength increases by the same factor
         model_profile = np.interp(wl_emit_model, self.wl_emit_intrinsic, self.flux_intrinsic/(1.0 + z))
-        if model_uncertainty:
-            assert self.model_uncertainty
-            model_profile_low = np.interp(wl_emit_model, self.wl_emit_intrinsic, (self.flux_intrinsic-self.flux_intrinsic_lowerr)/(1.0 + z))
-            model_profile_up = np.interp(wl_emit_model, self.wl_emit_intrinsic, (self.flux_intrinsic+self.flux_intrinsic_uperr)/(1.0 + z))
         
         if self.add_DLA:
             wl_emit_array = self.wl_obs_model / (1.0 + theta[self.params.index("redshift_DLA")]) if self.add_DLA["vary_redshift"] else wl_emit_model
@@ -476,47 +475,29 @@ class MN_IGM_DLA_solver(Solver):
                                     b_turb=theta[self.params.index("b_turb")] if self.add_DLA["vary_b_turb"] else self.add_DLA.get("fixed_b_turb", 0.0))
             
             model_profile *= np.exp(-tau_DLA_theta)
-            if model_uncertainty:
-                model_profile_low *= np.exp(-tau_DLA_theta)
-                model_profile_up *= np.exp(-tau_DLA_theta)
         
         if self.add_IGM:
             # Add the "standard" prescription for IGM absorption as well as a bespoke damping-wing absorption (interpolated from pre-computed grid)
             igm_transmission = igm_absorption(self.wl_obs_model, z) * self.IGM_damping_transmission(self.wl_obs_model, theta)
 
             model_profile *= igm_transmission
-            if model_uncertainty:
-                model_profile_low *= igm_transmission
-                model_profile_up *= igm_transmission
         
         if self.convolve:
             model_profile = gaussian_filter1d(model_profile, sigma=self.n_res/(2.0 * np.sqrt(2.0 * np.log(2))),
                                                 mode="nearest", truncate=5.0)
-            if model_uncertainty:
-                model_profile_low = gaussian_filter1d(model_profile_low, sigma=self.n_res/(2.0 * np.sqrt(2.0 * np.log(2))),
-                                                        mode="nearest", truncate=5.0)
-                model_profile_up = gaussian_filter1d(model_profile_up, sigma=self.n_res/(2.0 * np.sqrt(2.0 * np.log(2))),
-                                                        mode="nearest", truncate=5.0)
             
             # Rebin to input wavelength array
             model_profile = spectres(self.wl_obs, self.wl_obs_model, model_profile)
-            if model_uncertainty:
-                model_profile_low = spectres(self.wl_obs, self.wl_obs_model, model_profile_low)
-                model_profile_up = spectres(self.wl_obs, self.wl_obs_model, model_profile_up)
         
-        if model_uncertainty:
-            return (model_profile, model_profile_low, model_profile_up)
-        else:
-            return model_profile
+        return model_profile
 
     def LogLikelihood(self, cube):
         # Likelihood from fitting the IGM and/or DLA transmission
-        if self.model_uncertainty:
-            model_profile, model_profile_low, model_profile_up = self.get_profile(cube, model_uncertainty=True)
-            flux_intrinsic_err = np.mean([model_profile-model_profile_low, model_profile_up-model_profile], axis=0)
-            return -0.5 * np.nansum((self.flux - model_profile)**2 / (self.flux_err**2 + flux_intrinsic_err**2))
+        diff = self.flux - self.get_profile(cube)
+        
+        if self.invcov:
+            return -0.5 * np.linalg.multi_dot([diff, self.flux_err, diff])
         else:
-            model_profile = self.get_profile(cube, model_uncertainty=False)
-            return -0.5 * np.nansum(((self.flux - model_profile) / self.flux_err)**2)
+            return -0.5 * np.nansum((diff / self.flux_err)**2)
 
 
