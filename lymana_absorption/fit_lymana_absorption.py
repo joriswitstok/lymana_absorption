@@ -193,37 +193,41 @@ class MN_IGM_DLA_solver(Solver):
                     try:
                         params_hpds[param] = hpd_grid(gaussian_filter1d(data[pi], 1.0), alpha=1.0-hdf[param])
                     except:
-                        params_hpds[param] = [np.percentile(data[pi], [0.5*(100-68.2689), 0.5*(100+68.2689)])], np.nan, np.nan, [np.median(data[pi])]
+                        params_hpds[param] = np.percentile(data[pi], [0.5*(100-68.2689), 0.5*(100+68.2689)]), np.nan, np.nan, [np.median(data[pi])]
             
             params_vals = {}
             params_labs = {}
             for pi, param in enumerate(self.params):
                 if param in hdf:
                     hpd_mu, _, _, modes_mu = params_hpds[param]
-                    if len(modes_mu) == 1:
-                        params_vals[param + "_value"] = modes_mu[0], modes_mu[0]-hpd_mu[0][0], hpd_mu[0][1]-modes_mu[0]
-                        prec = max(0, 1-math.floor(np.log10(min(params_vals[param + "_value"][1:])))) if min(params_vals[param + "_value"][1:]) > 0 else 0
-                        params_labs[param + "_label"] = r"{} = {:.{prec}f}_{{-{:.{prec}f}}}^{{+{:.{prec}f}}}$".format(self.math_labels[pi][:-1],
-                                                                                                                        *params_vals[param + "_value"], prec=prec)
-                        
-                        if plot_corner:
-                            hpd_3sigma, _, _, modes_3sigma = hpd_grid(data[pi], alpha=1.0-0.9973)
-                            if len(hpd_3sigma) == 1:
-                                for ax in axes_c[:, pi]:
-                                    ax.set_xlim(max(self.theta_range[pi][0], hpd_3sigma[0][0]-3*(modes_3sigma[0]-hpd_3sigma[0][0])),
-                                                min(self.theta_range[pi][1], hpd_3sigma[0][1]+3*(hpd_3sigma[0][1]-modes_3sigma[0])))
-                                for ax in axes_c[pi, :pi]:
-                                    ax.set_ylim(max(self.theta_range[pi][0], hpd_3sigma[0][0]-3*(modes_3sigma[0]-hpd_3sigma[0][0])),
-                                                min(self.theta_range[pi][1], hpd_3sigma[0][1]+3*(hpd_3sigma[0][1]-modes_3sigma[0])))
-                        
-                            axes_c[pi, pi].annotate(text=params_labs[param + "_label"], xy=(0.5, 1), xytext=(0, 4),
-                                                    xycoords="axes fraction", textcoords="offset points", va="bottom", ha="center",
-                                                    size="small", alpha=0.8, bbox=dict(boxstyle="Round, pad=0.05", facecolor='w', edgecolor="None", alpha=0.8))
-                            axes_c[pi, pi].axvline(x=modes_mu[0], color="grey", alpha=0.8)
-                            axes_c[pi, pi].axvline(x=hpd_mu[0][0], linestyle='--', color="grey", alpha=0.8)
-                            axes_c[pi, pi].axvline(x=hpd_mu[0][1], linestyle='--', color="grey", alpha=0.8)
-                            if param == "redshift_DLA" and not self.redshift["vary"]:
-                                axes_c[pi, pi].axvline(x=self.redshift["fixed_redshift"], linestyle=':', color='k', alpha=0.8)
+                    if len(modes_mu) > 1:
+                        # Pick the mode closest to the median
+                        hpd_idx = np.argmin(np.abs(modes_mu - np.median(data[pi])))
+                        hpd_mu, modes_mu = [hpd_mu[hpd_idx]], [modes_mu[hpd_idx]]
+                    
+                    params_vals[param + "_value"] = modes_mu[0], modes_mu[0]-hpd_mu[0][0], hpd_mu[0][1]-modes_mu[0]
+                    prec = max(0, 1-math.floor(np.log10(min(params_vals[param + "_value"][1:])))) if min(params_vals[param + "_value"][1:]) > 0 else 0
+                    params_labs[param + "_label"] = r"{} = {:.{prec}f}_{{-{:.{prec}f}}}^{{+{:.{prec}f}}}$".format(self.math_labels[pi][:-1],
+                                                                                                                    *params_vals[param + "_value"], prec=prec)
+                    
+                    if plot_corner:
+                        hpd_3sigma, _, _, modes_3sigma = hpd_grid(data[pi], alpha=1.0-0.9973)
+                        if len(hpd_3sigma) == 1:
+                            for ax in axes_c[:, pi]:
+                                ax.set_xlim(max(self.theta_range[pi][0], hpd_3sigma[0][0]-3*(modes_3sigma[0]-hpd_3sigma[0][0])),
+                                            min(self.theta_range[pi][1], hpd_3sigma[0][1]+3*(hpd_3sigma[0][1]-modes_3sigma[0])))
+                            for ax in axes_c[pi, :pi]:
+                                ax.set_ylim(max(self.theta_range[pi][0], hpd_3sigma[0][0]-3*(modes_3sigma[0]-hpd_3sigma[0][0])),
+                                            min(self.theta_range[pi][1], hpd_3sigma[0][1]+3*(hpd_3sigma[0][1]-modes_3sigma[0])))
+                    
+                        axes_c[pi, pi].annotate(text=params_labs[param + "_label"], xy=(0.5, 1), xytext=(0, 4),
+                                                xycoords="axes fraction", textcoords="offset points", va="bottom", ha="center",
+                                                size="small", alpha=0.8, bbox=dict(boxstyle="Round, pad=0.05", facecolor='w', edgecolor="None", alpha=0.8))
+                        axes_c[pi, pi].axvline(x=modes_mu[0], color="grey", alpha=0.8)
+                        axes_c[pi, pi].axvline(x=hpd_mu[0][0], linestyle='--', color="grey", alpha=0.8)
+                        axes_c[pi, pi].axvline(x=hpd_mu[0][1], linestyle='--', color="grey", alpha=0.8)
+                        if param == "redshift_DLA" and not self.redshift["vary"]:
+                            axes_c[pi, pi].axvline(x=self.redshift["fixed_redshift"], linestyle=':', color='k', alpha=0.8)
             
             # Loop over the histograms
             for ri in range(self.n_dims):
