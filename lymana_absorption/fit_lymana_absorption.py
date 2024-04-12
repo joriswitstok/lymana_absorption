@@ -32,8 +32,8 @@ def import_corner():
     return corner
 
 class MN_IGM_DLA_solver(Solver):
-    def __init__(self, wl_emit_intrinsic, flux_intrinsic, wl_obs, flux, flux_err, redshift, add_IGM={}, add_DLA={}, convolve={},
-                    print_setup=True, plot_setup=False, mpl_style=None, verbose=True,
+    def __init__(self, wl_emit_intrinsic, flux_intrinsic, wl_obs, flux, flux_err, redshift, intrinsic_spectrum={}, add_IGM={}, add_DLA={}, convolve={},
+                    conv=None, print_setup=True, plot_setup=False, mpl_style=None, verbose=True,
                     mpi_run=False, mpi_comm=None, mpi_rank=0, mpi_ncores=1, mpi_synchronise=None, **solv_kwargs):
         self.mpi_run = mpi_run
         self.mpi_comm = mpi_comm
@@ -51,6 +51,10 @@ class MN_IGM_DLA_solver(Solver):
         # Intrinsic wavelength and flux (both in rest frame to allow variation in redshift)
         self.wl_emit_intrinsic = wl_emit_intrinsic # Angstrom
         self.flux_intrinsic = flux_intrinsic # in units of F_λ
+        self.model_intrinsic_spectrum = self.wl_emit_intrinsic is None or self.flux_intrinsic is None
+        if self.model_intrinsic_spectrum:
+            # If intrinsic spectrum not provided, parameters to model it should be given
+            assert intrinsic_spectrum
 
         # Observed wavelength and flux
         self.flux = flux # same units of F_λ as the intrinsic spectrum
@@ -60,6 +64,7 @@ class MN_IGM_DLA_solver(Solver):
         
         # Information on model parameters
         self.redshift = redshift
+        self.intrinsic_spectrum = intrinsic_spectrum
         self.add_IGM = add_IGM
         self.add_DLA = add_DLA
         self.convolve = convolve
@@ -90,18 +95,24 @@ class MN_IGM_DLA_solver(Solver):
             
             z_fid = 0.5*(self.redshift["min_z"]+self.redshift["max_z"]) if self.redshift["vary"] else self.redshift["fixed_redshift"]
             ax.plot(np.nan, np.nan, color="None", label=r"Fiducial $z = {:.6g}$:".format(z_fid))
-            ax.errorbar(self.wl_emit_intrinsic*(1.0 + z_fid), self.flux_intrinsic/(1.0 + z_fid),
-                        color='k', alpha=0.8, label="Intrinsic")
-            ax.errorbar(self.wl_obs, self.flux, yerr=self.flux_err, linestyle="None", marker='o', markersize=0.5, color='k', alpha=0.8,
+            if not self.model_intrinsic_spectrum:
+                ax.errorbar(self.wl_emit_intrinsic*(1.0 + z_fid), self.flux_intrinsic/(1.0 + z_fid),
+                            color='k', alpha=0.8, label="Intrinsic")
+            ax.errorbar(self.wl_obs, self.flux, yerr=None if self.invcov else self.flux_err,
+                        linestyle="None", marker='o', markersize=0.5, color='k', alpha=0.8,
                         label="Measurements")
             
+            wl_emit_range = np.linspace(800, 1800, 200)
             if self.add_DLA:
                 for logN_HI in np.linspace(self.add_DLA["min_logN_HI"], self.add_DLA["max_logN_HI"], 5):
-                    taui = tau_DLA(wl_emit_array=self.wl_emit_intrinsic, N_HI=10**logN_HI, T=self.add_DLA["T_HI"], b_turb=0.0)
-                    ax.plot(self.wl_emit_intrinsic, np.exp(-taui)*self.flux_intrinsic/(1.0 + z_fid),
+                    wl_emit_array = wl_emit_range if self.model_intrinsic_spectrum else self.wl_emit_intrinsic
+                    taui = tau_DLA(wl_emit_array=wl_emit_array, N_HI=10**logN_HI, T=self.add_DLA["T_HI"], b_turb=0.0)
+                    
+                    theta = [0.5*(self.intrinsic_spectrum["min_" + p]+self.intrinsic_spectrum["max_" + p]) if p in ["C0", "beta_UV"] else np.nan for p in self.params]
+                    
+                    ax.plot(wl_emit_array, np.exp(-taui)*self.get_intrinsic_profile(theta, z_fid, wl_emit_range),
                             alpha=0.8, label=r"$N_\mathrm{{HI}} = 10^{{{:.1f}}} \, \mathrm{{cm^{{-2}}}}$".format(logN_HI))
 
-            wl_emit_range = np.linspace(800, 1800, 200)
             for z, ls in zip([z_fid, self.redshift["min_z"], self.redshift["max_z"]] if self.redshift["vary"] else [self.redshift["fixed_redshift"]], ['-', '--', ':']):
                 wl_obs_range = wl_emit_range * (1.0 + z)
                 self.set_wl_arrays(wl_obs_range)
@@ -121,7 +132,7 @@ class MN_IGM_DLA_solver(Solver):
 
             ax.set_xlim(1100*(1.0 + z_fid), 1500*(1.0 + z_fid))
 
-            ax.legend()
+            ax.legend(fontsize="xx-small")
             
             plt.show()
             plt.close(fig)
@@ -134,7 +145,7 @@ class MN_IGM_DLA_solver(Solver):
         self.mpi_synchronise(self.mpi_comm)
         self.fitting_complete = True
 
-    def analyse_posterior(self, hdf={}, plot_corner=True, fig=None, figsize=None, figname=None, showfig=False, color=None):
+    def analyse_posterior(self, hdf={}, plot_corner=True, conv=1, fig=None, figsize=None, figname=None, showfig=False, color=None):
         if self.mpi_rank != 0:
             params_vals = None
             params_labs = None
@@ -155,37 +166,46 @@ class MN_IGM_DLA_solver(Solver):
                 bins = [n_bins] * len(self.params)
 
             data = self.samples.transpose()
+            theta_range = self.theta_range.copy()
+            if "logF_Lya" in self.params:
+                # Apply unit conversion to the Lya flux
+                data[self.params.index("logF_Lya")] -= np.log10(conv)
+                theta_range[self.params.index("logF_Lya")] -= np.log10(conv)
             
             # Deselect non-finite data for histograms
             select_data = np.product([np.isfinite(d) for d in data], axis=0).astype(bool)
             data = [d[select_data] for d in data]
             
             if plot_corner:
-                if figsize is not None:
-                    fig = plt.figure(figsize=(8.27/2, 8.27/2))
+                if figsize is None:
+                    figsize = (8.27/2, 8.27/2)
+                if fig is None:
+                    fig = plt.figure(figsize=figsize)
+                
                 if self.n_dims > 1:
-                    fig = corner.corner(np.transpose(data), labels=self.params, bins=bins, range=self.theta_range,
-                                        smooth=1, smooth1d=1, fig=fig, color=color, show_titles=False)
+                    fig = corner.corner(np.transpose(data), labels=self.params, bins=bins, range=theta_range,
+                                        smooth=0.5, smooth1d=0.5, fig=fig, color=color, show_titles=False)
                 else:
                     ax = fig.add_subplot(fig.add_gridspec(nrows=2, ncols=1, hspace=0, height_ratios=[1, 0])[0, :])
-                    hist, bin_edges = np.histogram(data[0], bins=bins[0], range=self.theta_range[0])
-                    ax.plot(0.5*(bin_edges[1:]+bin_edges[:-1]), gaussian_filter1d(hist, sigma=1), drawstyle="steps-mid", color=color)
+                    hist, bin_edges = np.histogram(data[0], bins=bins[0], range=theta_range[0])
+                    ax.plot(0.5*(bin_edges[1:]+bin_edges[:-1]), gaussian_filter1d(hist, sigma=0.5), drawstyle="steps-mid", color=color)
 
                 # Extract the axes
                 axes_c = np.array(fig.axes).reshape((self.n_dims, self.n_dims))
                 
                 for ri in range(self.n_dims):
                     for ci in range(ri+1):
+                        axes_c[ri, ci].tick_params(axis="both", which="both", direction="in")
                         axes_c[ri, ci].set_axisbelow(False)
                 
                 for ci in range(self.n_dims): 
                     axes_c[-1, ci].set_xlabel(self.labels[ci] + self.math_labels[ci])
                     for ax in axes_c[:, ci]:
-                        ax.set_xlim(self.theta_range[ci])
+                        ax.set_xlim(theta_range[ci])
                 for ri in range(1, self.n_dims):
                     axes_c[ri, 0].set_ylabel(self.labels[ri] + self.math_labels[ri])
                     for ax in axes_c[ri, :ri]:
-                        ax.set_ylim(self.theta_range[ri])
+                        ax.set_ylim(theta_range[ri])
             
             params_hpds = {}
             for pi, param in enumerate(self.params):
@@ -214,11 +234,11 @@ class MN_IGM_DLA_solver(Solver):
                         hpd_3sigma, _, _, modes_3sigma = hpd_grid(data[pi], alpha=1.0-0.9973)
                         if len(hpd_3sigma) == 1:
                             for ax in axes_c[:, pi]:
-                                ax.set_xlim(max(self.theta_range[pi][0], hpd_3sigma[0][0]-3*(modes_3sigma[0]-hpd_3sigma[0][0])),
-                                            min(self.theta_range[pi][1], hpd_3sigma[0][1]+3*(hpd_3sigma[0][1]-modes_3sigma[0])))
+                                ax.set_xlim(max(theta_range[pi][0], hpd_3sigma[0][0]-3*(modes_3sigma[0]-hpd_3sigma[0][0])),
+                                            min(theta_range[pi][1], hpd_3sigma[0][1]+3*(hpd_3sigma[0][1]-modes_3sigma[0])))
                             for ax in axes_c[pi, :pi]:
-                                ax.set_ylim(max(self.theta_range[pi][0], hpd_3sigma[0][0]-3*(modes_3sigma[0]-hpd_3sigma[0][0])),
-                                            min(self.theta_range[pi][1], hpd_3sigma[0][1]+3*(hpd_3sigma[0][1]-modes_3sigma[0])))
+                                ax.set_ylim(max(theta_range[pi][0], hpd_3sigma[0][0]-3*(modes_3sigma[0]-hpd_3sigma[0][0])),
+                                            min(theta_range[pi][1], hpd_3sigma[0][1]+3*(hpd_3sigma[0][1]-modes_3sigma[0])))
                     
                         axes_c[pi, pi].annotate(text=params_labs[param + "_label"], xy=(0.5, 1), xytext=(0, 4),
                                                 xycoords="axes fraction", textcoords="offset points", va="bottom", ha="center",
@@ -248,9 +268,9 @@ class MN_IGM_DLA_solver(Solver):
                     if rhdf:
                         hpd_rmu, _, _, modes_rmu = params_hpds[self.params[ri]]
                         if len(modes_rmu) == 1 and plot_corner:
-                            axes_c[ri, ci].axvline(x=modes_rmu[0], color="grey", alpha=0.8)
-                            axes_c[ri, ci].axvline(x=hpd_rmu[0][0], linestyle='--', color="grey", alpha=0.8)
-                            axes_c[ri, ci].axvline(x=hpd_rmu[0][1], linestyle='--', color="grey", alpha=0.8)
+                            axes_c[ri, ci].axhline(y=modes_rmu[0], color="grey", alpha=0.8)
+                            axes_c[ri, ci].axhline(y=hpd_rmu[0][0], linestyle='--', color="grey", alpha=0.8)
+                            axes_c[ri, ci].axhline(y=hpd_rmu[0][1], linestyle='--', color="grey", alpha=0.8)
                             if self.params[ri] == "redshift_DLA" and not self.redshift["vary"]:
                                 axes_c[ri, ci].axhline(y=self.redshift["fixed_redshift"], linestyle=':', color='k', alpha=0.8)
                     
@@ -276,14 +296,47 @@ class MN_IGM_DLA_solver(Solver):
     def set_wl_arrays(self, wl_obs):
         # Set observed wavelength array, assuring it is covered by the intrinsic spectrum and does not have any major gaps
         self.wl_obs = wl_obs
-        assert np.min(self.wl_emit_intrinsic) <= np.min(self.wl_obs / (1.0 + self.z_max))
-        assert np.max(self.wl_emit_intrinsic) >= np.max(self.wl_obs / (1.0 + self.z_min))
+        if not self.model_intrinsic_spectrum:
+            assert np.min(self.wl_emit_intrinsic) <= np.min(self.wl_obs / (1.0 + self.z_max))
+            assert np.max(self.wl_emit_intrinsic) >= np.max(self.wl_obs / (1.0 + self.z_min))
         assert np.all(np.diff(self.wl_obs) < 2 * median_filter(self.wl_obs[:-1], size=10))
 
         if self.convolve:
             self.wl_obs_model = self.get_highres_wl_array(wl_obs=self.wl_obs)
         else:
             self.wl_obs_model = self.wl_obs
+    
+    def get_highres_wl_array(self, wl_obs):
+        # Create higher-resolution wavelength array to convolve to lower resolution
+        assert self.convolve
+        wl_obs_bin_edges = []
+        wl = np.min(wl_obs) - 15 * np.min(wl_obs) / np.min(self.convolve["resolution_curve"])
+        
+        # Require a spectral resolution of at least R_min, need to increase the number of wavelength bins
+        dl_obs = self.wl_obs / np.interp(self.wl_obs, self.convolve["wl_obs_res"], self.convolve["resolution_curve"])
+        self.n_res = 3.0 * max(1.0, *dl_obs/(1215.6701/self.convolve.get("R_min", 1000.0)))
+        
+        while wl < np.max(wl_obs) + 15 * np.max(wl_obs) / np.min(self.convolve["resolution_curve"]):
+            wl_obs_bin_edges.append(wl)
+            wl += wl / (self.n_res * np.interp(wl, self.convolve["wl_obs_res"], self.convolve["resolution_curve"]))
+        
+        wl_obs_bin_edges = np.array(wl_obs_bin_edges)
+        assert wl_obs_bin_edges.size > 1
+        
+        return 0.5 * (wl_obs_bin_edges[:-1] + wl_obs_bin_edges[1:])
+
+    def get_intrinsic_profile(self, theta, z, wl_emit):
+        if self.model_intrinsic_spectrum:
+            C0 = (self.intrinsic_spectrum["fixed_C0"] if "fixed_C0" in self.intrinsic_spectrum else theta[self.params.index("C0")]) * (1.0 + z)
+            beta = self.intrinsic_spectrum["fixed_beta_UV"] if "fixed_beta_UV" in self.intrinsic_spectrum else theta[self.params.index("beta_UV")]
+            wl0 = self.intrinsic_spectrum["wl0"] / (1.0 + z) if self.intrinsic_spectrum["wl0_observed"] else self.intrinsic_spectrum["wl0"]
+            intrinsic_profile = C0 * (wl_emit/wl0)**beta
+        else:
+            intrinsic_profile = np.interp(wl_emit, self.wl_emit_intrinsic, self.flux_intrinsic)
+        
+        # Convert intrinsic flux density between the rest frame, as provided, and the observed frame, in which the
+        # flux density in units of F_λ decreases by a factor (1+z), while the wavelength increases by the same factor
+        return intrinsic_profile / (1.0 + z)
     
     def compute_IGM_curves(self, verbose=None):
         if verbose is None:
@@ -300,10 +353,10 @@ class MN_IGM_DLA_solver(Solver):
                 points.append(z_array)
                 self.IGM_params.append("redshift")
             if self.add_IGM["vary_R_ion"]:
-                dR = min(0.1, (self.add_IGM["max_R_ion"]-self.add_IGM["min_R_ion"])/20.0)
-                R_ion_array = np.arange(self.add_IGM["min_R_ion"]-0.1, self.add_IGM["max_R_ion"]+0.2, dR)
-                points.append(R_ion_array[R_ion_array >= 0])
-                self.IGM_params.append("R_ion")
+                dlogR = min(0.2, (self.add_IGM["max_logR_ion"]-self.add_IGM["min_logR_ion"])/20.0)
+                logR_ion_array = np.arange(self.add_IGM["min_logR_ion"]-0.2, self.add_IGM["max_logR_ion"]+0.4, dlogR)
+                points.append(logR_ion_array)
+                self.IGM_params.append("logR_ion")
             if self.add_IGM["vary_x_HI_global"]:
                 dx_HI = min(0.01, (self.add_IGM["max_x_HI_global"]-self.add_IGM["min_x_HI_global"])/20.0)
                 x_HI_global_array = np.arange(self.add_IGM["min_x_HI_global"]-0.01, self.add_IGM["max_x_HI_global"]+0.02, dx_HI)
@@ -350,7 +403,7 @@ class MN_IGM_DLA_solver(Solver):
                     ind = (0,) + np.unravel_index(mgi, array_sizes[1:])
                     z = points_mg[self.IGM_params.index("redshift")][ind] if self.redshift["vary"] else self.redshift["fixed_redshift"]
                     IGM_damping_arrays[:, mgi] = np.exp(-tau_IGM(wl_obs_array=wl_emit_array*(1.0+z), z_s=z,
-                                                                    R_ion=points_mg[self.IGM_params.index("R_ion")][ind] if self.add_IGM["vary_R_ion"] else self.add_IGM["fixed_R_ion"],
+                                                                    R_ion=10**points_mg[self.IGM_params.index("logR_ion")][ind] if self.add_IGM["vary_R_ion"] else self.add_IGM["fixed_R_ion"],
                                                                     x_HI_global=points_mg[self.IGM_params.index("x_HI_global")][ind] if self.add_IGM["vary_x_HI_global"] else self.add_IGM["fixed_x_HI_global"],
                                                                     cosmo=self.add_IGM["cosmo"]))
                 
@@ -392,25 +445,6 @@ class MN_IGM_DLA_solver(Solver):
         
         return self.IGM_damping_interp(points)
     
-    def get_highres_wl_array(self, wl_obs):
-        # Create higher-resolution wavelength array to convolve to lower resolution
-        assert self.convolve
-        wl_obs_bin_edges = []
-        wl = np.min(wl_obs) - 15 * np.min(wl_obs) / np.min(self.convolve["resolution_curve"])
-        
-        # Require a spectral resolution of at least R_min, need to increase the number of wavelength bins
-        dl_obs = self.wl_obs / np.interp(self.wl_obs, self.convolve["wl_obs_res"], self.convolve["resolution_curve"])
-        self.n_res = 3.0 * max(1.0, *dl_obs/(1215.6701/self.convolve.get("R_min", 1000.0)))
-        
-        while wl < np.max(wl_obs) + 15 * np.max(wl_obs) / np.min(self.convolve["resolution_curve"]):
-            wl_obs_bin_edges.append(wl)
-            wl += wl / (self.n_res * np.interp(wl, self.convolve["wl_obs_res"], self.convolve["resolution_curve"]))
-        
-        wl_obs_bin_edges = np.array(wl_obs_bin_edges)
-        assert wl_obs_bin_edges.size > 1
-        
-        return 0.5 * (wl_obs_bin_edges[:-1] + wl_obs_bin_edges[1:])
-    
     def set_prior(self):
         self.params = []
         self.labels = []
@@ -425,6 +459,23 @@ class MN_IGM_DLA_solver(Solver):
         
         self.z_min = self.redshift["min_z"] if self.redshift["vary"] else self.redshift["fixed_redshift"]
         self.z_max = self.redshift["max_z"] if self.redshift["vary"] else self.redshift["fixed_redshift"]
+
+        if self.model_intrinsic_spectrum:
+            if not "fixed_C0" in self.intrinsic_spectrum:
+                ranges.append([float(self.intrinsic_spectrum["min_C0"]), float(self.intrinsic_spectrum["max_C0"])])
+                self.params.append("C0")
+                self.labels.append("Cont. norm. ")
+                self.math_labels.append(r"$C$")
+            if not "fixed_beta_UV" in self.intrinsic_spectrum:
+                ranges.append([float(self.intrinsic_spectrum["min_beta_UV"]), float(self.intrinsic_spectrum["max_beta_UV"])])
+                self.params.append("beta_UV")
+                self.labels.append("UV slope ")
+                self.math_labels.append(r"$\beta_\mathrm{{UV}}$")
+            if self.intrinsic_spectrum["add_Lya"]:
+                ranges.append([float(self.intrinsic_spectrum["min_logF_Lya"]), float(self.intrinsic_spectrum["max_logF_Lya"])])
+                self.params.append("logF_Lya")
+                self.labels.append(r"Ly$\mathrm{\alpha}$ flux" + '\n')
+                self.math_labels.append(r"$\log_{{10}} \left( F_\mathrm{{Ly \alpha}} \, (\mathrm{{erg \, s^{{-1}} \, cm^{{-2}}}}) \right)$")
 
         if self.add_DLA:
             ranges.append([float(self.add_DLA["min_logN_HI"]), float(self.add_DLA["max_logN_HI"])])
@@ -443,10 +494,10 @@ class MN_IGM_DLA_solver(Solver):
                 self.math_labels.append(r"$b_\mathrm{{turb, \, DLA}} \, (\mathrm{{km \, s^{{-1}}}})$")
         if self.add_IGM:
             if self.add_IGM["vary_R_ion"]:
-                ranges.append([float(self.add_IGM["min_R_ion"]), float(self.add_IGM["max_R_ion"])])
-                self.params.append("R_ion")
-                self.labels.append("Ionised bubble radius ")
-                self.math_labels.append(r"$R_\mathrm{{ion}} \, (\mathrm{{pMpc}})$")
+                ranges.append([float(self.add_IGM["min_logR_ion"]), float(self.add_IGM["max_logR_ion"])])
+                self.params.append("logR_ion")
+                self.labels.append("Ionised bubble radius\n")
+                self.math_labels.append(r"$\log_{{10}} \left( R_\mathrm{{ion}} \, (\mathrm{{pMpc}}) \right)$")
             elif self.add_IGM["vary_x_HI_global"]:
                 ranges.append([float(self.add_IGM["min_x_HI_global"]), float(self.add_IGM["max_x_HI_global"])])
                 self.params.append("x_HI_global")
@@ -465,26 +516,41 @@ class MN_IGM_DLA_solver(Solver):
         
         return cube
 
+    def get_dla_transmission(self, theta, wl_emit_model):
+        if self.add_DLA["vary_redshift"]:
+            wl_emit_array = self.wl_obs_model / (1.0 + theta[self.params.index("redshift_DLA")])
+        else:
+            wl_emit_array = wl_emit_model
+        
+        tau_DLA_theta = tau_DLA(wl_emit_array=wl_emit_array, N_HI=10**theta[self.params.index("logN_HI")], T=self.add_DLA["T_HI"],
+                                b_turb=theta[self.params.index("b_turb")] if self.add_DLA["vary_b_turb"] else self.add_DLA.get("fixed_b_turb", 0.0))
+        
+        return np.exp(-tau_DLA_theta)
+
+    def get_igm_transmission(self, theta, wl_obs_model, z=None):
+        if z is None:
+            z = theta[self.params.index("redshift")] if self.redshift["vary"] else self.redshift["fixed_redshift"]
+        
+        return igm_absorption(wl_obs_model, z) * self.IGM_damping_transmission(wl_obs_model, theta)
+
     def get_profile(self, theta):
         z = theta[self.params.index("redshift")] if self.redshift["vary"] else self.redshift["fixed_redshift"]
         wl_emit_model = self.wl_obs_model / (1.0 + z) # in Angstrom
         
-        # Convert intrinsic flux density between the rest frame, as provided, and the observed frame, in which the
-        # flux density in units of F_λ decreases by a factor (1+z), while the wavelength increases by the same factor
-        model_profile = np.interp(wl_emit_model, self.wl_emit_intrinsic, self.flux_intrinsic/(1.0 + z))
+        # Obtain model profile (in the rest frame)
+        model_profile = self.get_intrinsic_profile(theta, z, wl_emit_model)
         
         if self.add_DLA:
-            wl_emit_array = self.wl_obs_model / (1.0 + theta[self.params.index("redshift_DLA")]) if self.add_DLA["vary_redshift"] else wl_emit_model
-            tau_DLA_theta = tau_DLA(wl_emit_array=wl_emit_array, N_HI=10**theta[self.params.index("logN_HI")], T=self.add_DLA["T_HI"],
-                                    b_turb=theta[self.params.index("b_turb")] if self.add_DLA["vary_b_turb"] else self.add_DLA.get("fixed_b_turb", 0.0))
-            
-            model_profile *= np.exp(-tau_DLA_theta)
+            model_profile *= self.get_dla_transmission(theta, wl_emit_model=wl_emit_model)
+        
+        if self.model_intrinsic_spectrum and self.intrinsic_spectrum["add_Lya"]:
+            wl_Lya = self.intrinsic_spectrum["fixed_wl_Lya"] / (1.0 + z)
+            sigma = wl_Lya / (299792.458/self.intrinsic_spectrum["fixed_sigma_v_Lya"] - 1.0)
+            model_profile += 10**theta[self.params.index("logF_Lya")] / (np.sqrt(2*np.pi)*sigma) * np.exp( -(wl_emit_model-wl_Lya)**2 / (2.0*sigma**2) )
         
         if self.add_IGM:
             # Add the "standard" prescription for IGM absorption as well as a bespoke damping-wing absorption (interpolated from pre-computed grid)
-            igm_transmission = igm_absorption(self.wl_obs_model, z) * self.IGM_damping_transmission(self.wl_obs_model, theta)
-
-            model_profile *= igm_transmission
+            model_profile *= self.get_igm_transmission(theta, wl_obs_model=self.wl_obs_model, z=z)
         
         if self.convolve:
             model_profile = gaussian_filter1d(model_profile, sigma=self.n_res/(2.0 * np.sqrt(2.0 * np.log(2))),
