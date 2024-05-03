@@ -184,7 +184,7 @@ class MN_IGM_DLA_solver(Solver):
                 
                 if self.n_dims > 1:
                     fig = corner.corner(np.transpose(data), labels=self.params, bins=bins, range=theta_range,
-                                        smooth=0.5, smooth1d=0.5, fig=fig, color=color, show_titles=False)
+                                        fig=fig, color=color, show_titles=False)
                 else:
                     ax = fig.add_subplot(fig.add_gridspec(nrows=2, ncols=1, hspace=0, height_ratios=[1, 0])[0, :])
                     hist, bin_edges = np.histogram(data[0], bins=bins[0], range=theta_range[0])
@@ -210,15 +210,14 @@ class MN_IGM_DLA_solver(Solver):
             params_hpds = {}
             for pi, param in enumerate(self.params):
                 if param in hdf:
-                    try:
-                        params_hpds[param] = hpd_grid(gaussian_filter1d(data[pi], 1.0), alpha=1.0-hdf[param])
-                    except:
-                        params_hpds[param] = np.percentile(data[pi], [0.5*(100-68.2689), 0.5*(100+68.2689)]), np.nan, np.nan, [np.median(data[pi])]
+                    params_hpds[param] = hpd_grid(gaussian_filter1d(data[pi], 1.0), alpha=0.5*(1.0-hdf[param]))
+                else:
+                    params_hpds[param] = [np.percentile(data[pi], [0.5*(100-68.2689), 0.5*(100+68.2689)])], np.nan, np.nan, [np.median(data[pi])]
             
             params_vals = {}
             params_labs = {}
             for pi, param in enumerate(self.params):
-                if param in hdf:
+                if param in params_hpds:
                     hpd_mu, _, _, modes_mu = params_hpds[param]
                     if len(modes_mu) > 1:
                         # Pick the mode closest to the median
@@ -253,8 +252,8 @@ class MN_IGM_DLA_solver(Solver):
             for ri in range(self.n_dims):
                 for ci in range(ri):
                     # High-density intervals
-                    rhdf = self.params[ri] in hdf
-                    chdf = self.params[ci] in hdf
+                    rhdf = self.params[ri] in params_hpds
+                    chdf = self.params[ci] in params_hpds
 
                     if chdf:
                         hpd_cmu, _, _, modes_cmu = params_hpds[self.params[ci]]
@@ -360,7 +359,7 @@ class MN_IGM_DLA_solver(Solver):
             if self.add_IGM["vary_x_HI_global"]:
                 dx_HI = min(0.01, (self.add_IGM["max_x_HI_global"]-self.add_IGM["min_x_HI_global"])/20.0)
                 x_HI_global_array = np.arange(self.add_IGM["min_x_HI_global"]-0.01, self.add_IGM["max_x_HI_global"]+0.02, dx_HI)
-                points.append(x_HI_global_array[(x_HI_global_array >= 0) * (x_HI_global_array <= 1)])
+                points.append(x_HI_global_array[(x_HI_global_array >= 0)])
                 self.IGM_params.append("x_HI_global")
             
             array_sizes = [p.size for p in points]
@@ -498,7 +497,7 @@ class MN_IGM_DLA_solver(Solver):
                 self.params.append("logR_ion")
                 self.labels.append("Ionised bubble radius\n")
                 self.math_labels.append(r"$\log_{{10}} \left( R_\mathrm{{ion}} \, (\mathrm{{pMpc}}) \right)$")
-            elif self.add_IGM["vary_x_HI_global"]:
+            if self.add_IGM["vary_x_HI_global"]:
                 ranges.append([float(self.add_IGM["min_x_HI_global"]), float(self.add_IGM["max_x_HI_global"])])
                 self.params.append("x_HI_global")
                 self.labels.append("IGM HI fraction ")
