@@ -1,70 +1,49 @@
 import numpy as np
-import scipy.stats.kde as kde
+from scipy.stats import gaussian_kde
 
-def hpd_grid(sample, alpha=0.05, roundto=6):
+def get_mode_hdi(sample, prob=0.05):
     """
-    Calculate highest posterior density (HPD) of array for given alpha. 
-    The HPD is the minimum width Bayesian credible interval (BCI). 
-    The function works for multimodal distributions, returning more than one mode
+    Calculate highest density interval (HDI) of array for given probability.
+    The HDI is the minimum width Bayesian credible interval (BCI).
 
-    Source: https://github.com/aloctavodia/BAP/blob/master/first_edition/code/Chp1/hpd.py
+    Sources: https://python.arviz.org/en/stable/api/generated/arviz.hdi.html,
+    https://github.com/aloctavodia/BAP/blob/master/first_edition/code/Chp1/hpd.py
 
     Parameters
     ----------
     
     sample : Numpy array or python list
         An array containing MCMC samples
-    alpha : float
-        Desired probability of type I error (defaults to 0.05)
-    roundto: integer
-        Number of digits after the decimal point for the results
+    prob : float
+        Desired probability
 
     Returns
     ----------
-    hpd: array with the lower 
+    hpd: 
           
     """
     
     sample = np.asarray(sample)
     sample = sample[~np.isnan(sample)]
     
-    # get upper and lower bounds
+    # Get lower and upper bounds
     l = np.min(sample)
     u = np.max(sample)
-    density = kde.gaussian_kde(sample)
     x = np.linspace(l, u, 2000)
-    y = density.evaluate(x)
+    dx = (x[-1]-x[0])/x.size
     
-    #y = density.evaluate(x, l, u) waitting for PR to be accepted
-    xy_zipped = zip(x, y/np.sum(y))
-    xy = sorted(xy_zipped, key=lambda x: x[1], reverse=True)
-    xy_cum_sum = 0
-    hdv = []
-    
-    for val in xy:
-        xy_cum_sum += val[1]
-        hdv.append(val[0])
-        if xy_cum_sum >= (1-alpha):
-            break
-    
-    hdv.sort()
-    diff = (u-l)/20  # differences of 5%
-    hpd = []
-    hpd.append(round(min(hdv), roundto))
-    
-    for i in range(1, len(hdv)):
-        if hdv[i]-hdv[i-1] >= diff:
-            hpd.append(round(hdv[i-1], roundto))
-            hpd.append(round(hdv[i], roundto))
-    
-    hpd.append(round(max(hdv), roundto))
-    ite = iter(hpd)
-    hpd = list(zip(ite, ite))
+    # Kernel density estimate of the distribution
+    density = gaussian_kde(sample)(x)
+    density /= np.sum(density)
+    # Find values that lie within the HDI
+    indices = np.argsort(-density)
+    sorted_interval_values = np.sort(x[indices][density[indices].cumsum() <= prob])
+
     modes = []
-   
-    for value in hpd:
-        x_hpd = x[(x > value[0]) & (x < value[1])]
-        y_hpd = y[(x > value[0]) & (x < value[1])]
-        modes.append(round(x_hpd[np.argmax(y_hpd)], roundto))
+    hdi_intervals = []
+    for interval in np.split(sorted_interval_values, np.where(np.diff(sorted_interval_values) >= dx * 1.1)[0]+1):
+        int_select = (x > interval[0]) * (x < interval[-1])
+        modes.append(x[int_select][np.argmax(density[int_select])])
+        hdi_intervals.append([interval[0], interval[-1]])
     
-    return (hpd, x, y, modes)
+    return (modes, hdi_intervals)
