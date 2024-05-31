@@ -378,7 +378,7 @@ class MN_IGM_DLA_solver(Solver):
                 
                 if n_dims > 1:
                     fig = corner.corner(np.transpose(data), labels=params, bins=bins, range=priors_minmax,
-                                        levels=[1 - np.exp(-0.5), 1 - np.exp(-1.0),], fig=fig, color=color, show_titles=False)
+                                        fig=fig, color=color, show_titles=False)
                 else:
                     ax = fig.add_subplot(fig.add_gridspec(nrows=2, ncols=1, hspace=0, height_ratios=[1, 0])[0, :])
                     hist, bin_edges = np.histogram(data[0], bins=bins[0], range=priors_minmax[0])
