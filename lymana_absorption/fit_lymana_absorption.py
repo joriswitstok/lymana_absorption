@@ -12,11 +12,12 @@ import numpy as np
 import math
 
 from pymultinest.solve import Solver
-from scipy.stats import norm, skewnorm, gamma
+from scipy.stats import norm, gamma
 
 from astropy import units
-from astropy.cosmology import FLRW, z_at_value
+from astropy.cosmology import FLRW, FlatLambdaCDM, z_at_value
 
+from scipy.optimize import minimize
 from scipy.ndimage import median_filter, gaussian_filter1d
 from scipy.interpolate import RegularGridInterpolator
 from scipy.integrate import solve_ivp
@@ -28,6 +29,12 @@ from .stats import get_mode_hdi
 from .mean_IGM_absorption import igm_absorption
 from .lymana_optical_depth import tau_IGM, tau_DLA
 from .recombination_emissivity import f_recA, f_recB, alpha_A_HII_Draine2011, alpha_B_HII_Draine2011
+
+def import_yaml():
+    import yaml
+    from yaml.loader import SafeLoader
+
+    return (yaml, SafeLoader)
 
 def import_matplotlib():
     from matplotlib import pyplot as plt
@@ -41,9 +48,10 @@ def import_corner():
     return corner
 
 class MN_IGM_DLA_solver(Solver):
-    def __init__(self, wl_emit_intrinsic, flux_intrinsic, wl_obs, flux, flux_err, redshift_prior, intrinsic_spectrum={}, add_IGM={}, add_DLA={}, convolve={},
-                    conv=None, print_setup=True, plot_setup=False, mpl_style=None, verbose=True,
-                    mpi_run=False, mpi_comm=None, mpi_rank=0, mpi_ncores=1, mpi_synchronise=None, **solv_kwargs):
+    def __init__(self, wl_emit_intrinsic, flux_intrinsic, wl_obs, flux, flux_err, redshift_prior,
+                 intrinsic_spectrum={}, add_IGM={}, add_DLA={}, convolve={}, yml_setup=None,
+                 minimise_chi2=False, conv=None, print_setup=True, plot_setup=False, mpl_style=None, verbose=True,
+                 mpi_run=False, mpi_comm=None, mpi_rank=0, mpi_ncores=1, mpi_synchronise=None, **solv_kwargs):
         self.mpi_run = mpi_run
         self.mpi_comm = mpi_comm
         self.mpi_rank = mpi_rank
@@ -57,6 +65,17 @@ class MN_IGM_DLA_solver(Solver):
         
         if self.mpi_rank == 0 and self.verbose:
             print("Initialising MultiNest Solver object{}...".format(self.mpi_run_str))
+        
+        if yml_setup is not None:
+            # Open .yml setup file and load settings
+            yaml, SafeLoader = import_yaml()
+            with open(yml_setup) as f:
+                setup = yaml.load(f, Loader=SafeLoader)
+            
+            intrinsic_spectrum = setup["intrinsic_spectrum"]
+            add_IGM = setup["add_IGM"]
+            add_DLA = setup["add_DLA"]
+            convolve = setup["convolve"]
 
         # Intrinsic wavelength and flux (both in rest frame to allow variation in redshift)
         self.wl_emit_intrinsic = wl_emit_intrinsic # Angstrom
@@ -68,10 +87,42 @@ class MN_IGM_DLA_solver(Solver):
             assert "wl0_emit" in intrinsic_spectrum or "wl0_observed" in intrinsic_spectrum
 
         # Observed wavelength and flux
-        self.flux = flux # same units of F_λ as the intrinsic spectrum
-        self.flux_err = flux_err # same units of F_λ as the intrinsic spectrum
-        # Is error is given as inverse covariance matrix?
-        self.invcov = self.flux_err.ndim == 2
+        self.wl_obs_list = []
+        self.flux_list = []
+        self.flux_err_list = []
+
+        if hasattr(wl_obs[0], "__len__"):
+            self.obs_IDs = []
+            for oi in range(len(wl_obs)):
+                self.obs_IDs.append("_{:d}".format(oi))
+
+                # Set observed wavelength array, assuring it does not have any major gaps
+                assert np.all(np.diff(wl_obs[oi]) < 2 * median_filter(wl_obs[oi][:-1], size=10))
+                self.wl_obs_list.append(np.asarray(wl_obs[oi]))
+                
+                self.flux_list.append(np.asarray(flux[oi])) # same units of F_λ as the intrinsic spectrum
+                self.flux_err_list.append(np.asarray(flux_err[oi])) # same units of F_λ as the intrinsic spectrum
+        else:
+            # Set observed wavelength array, assuring it does not have any major gaps
+            assert np.all(np.diff(wl_obs) < 2 * median_filter(wl_obs[:-1], size=10))
+            self.wl_obs_list = [np.asarray(wl_obs)]
+            
+            self.flux_list = [np.asarray(flux)] # same units of F_λ as the intrinsic spectrum
+            self.flux_err_list = [np.asarray(flux_err)] # same units of F_λ as the intrinsic spectrum
+            
+            self.obs_IDs = ['']
+            
+            if convolve is not None and "wl_obs_res" in convolve:
+                convolve["wl_obs_res_0"] = convolve.pop("wl_obs_res")
+                convolve["resolution_curve_0"] = convolve.pop("resolution_curve")
+        
+        self.n_chan_list = [wl_obs.size for wl_obs in self.wl_obs_list]
+        self.n_chan = np.sum(self.n_chan_list)
+        for wl_obs, flux, flux_err in zip(self.wl_obs_list, self.flux_list, self.flux_err_list):
+            assert wl_obs.size == flux.size
+            assert np.all(np.array(flux_err.shape) == flux.size)
+        
+        self.n_obs = len(self.wl_obs_list)
         self.conv = conv
         
         # Information on model parameters
@@ -80,7 +131,18 @@ class MN_IGM_DLA_solver(Solver):
         self.add_IGM = add_IGM
         self.add_DLA = add_DLA
         self.add_Lya = self.model_intrinsic_spectrum and self.intrinsic_spectrum["add_Lya"]
-        self.convolve = convolve
+        if convolve is None:
+            self.convolve = {}
+            for oi, wl_obs in enumerate(self.wl_obs_list):
+                self.convolve["wl_obs_res_{:d}".format(oi)] = wl_obs
+                self.convolve["resolution_curve_{:d}".format(oi)] = np.tile(self.convolve.get("R_min", 5000.0), wl_obs.size)
+        else:
+            self.convolve = convolve
+            for oi in range(self.n_obs):
+                if isinstance(self.convolve["wl_obs_res_{:d}".format(oi)], str):
+                    self.convolve["wl_obs_res_{:d}".format(oi)] = np.loadtxt(self.convolve["wl_obs_res_{:d}".format(oi)])
+                if isinstance(self.convolve["resolution_curve_{:d}".format(oi)], str):
+                    self.convolve["resolution_curve_{:d}".format(oi)] = np.loadtxt(self.convolve["resolution_curve_{:d}".format(oi)])
         assert self.add_IGM or self.add_DLA
         
         self.cosmo = None
@@ -88,7 +150,11 @@ class MN_IGM_DLA_solver(Solver):
         self.fixed_f_esc = None
         if self.add_IGM:
             self.cosmo = self.add_IGM["cosmo"]
-            assert isinstance(self.cosmo, FLRW)
+            if not isinstance(self.cosmo, FLRW):
+                assert isinstance(self.cosmo, dict)
+                cosmo_func = {"FLRW": FLRW, "FlatLambdaCDM": FlatLambdaCDM}[self.cosmo["type"]]
+                self.cosmo = cosmo_func(**self.cosmo["kwargs"])
+            
             self.IGM_damping_interp = None
             if "coupled_R_ion" in self.add_IGM:
                 self.add_IGM["vary_R_ion"] = True
@@ -97,11 +163,25 @@ class MN_IGM_DLA_solver(Solver):
                 assert self.add_Lya
         
         self.set_prior()
-        self.set_wl_arrays(wl_obs)
+        self.set_wl_arrays()
+        
+        if print_setup and self.mpi_rank == 0:
+            print("\nInitialised {:d} observation{}!".format(self.n_obs, 's' if self.n_obs > 1 else ''))
+            print("The full spectrum will be modelled with {:d} bins".format(self.wl_obs_model.size))
+            for oi, wl_obs, wl_obs_rebin in zip(range(self.n_obs), self.wl_obs_list, self.wl_obs_rebin_list):
+                print("Observation {:d} with {:d} wavelength bins will be modelled with {:d} bins".format(oi+1, wl_obs.size, wl_obs_rebin.size))
+            print("\nModel information: {:d} free parameters\n".format(self.n_dims))
+        
         if self.add_IGM:
             self.compute_IGM_curves()
         
-        if print_setup and self.mpi_rank == 0 and self.verbose:
+        if not self.model_intrinsic_spectrum:
+            for wl_obs in self.wl_obs_list:
+                # Assure observed wavelength array is covered by the intrinsic spectrum
+                assert np.min(self.wl_emit_intrinsic) <= np.min(wl_obs / (1.0 + self.z_max))
+                assert np.max(self.wl_emit_intrinsic) >= np.max(wl_obs / (1.0 + self.z_min))
+        
+        if print_setup and self.mpi_rank == 0:
             priors_minmax = [self.get_prior_extrema(param) for param in self.params]
             mean_params = [np.mean(r) for r in priors_minmax]
             min_params = [r[0] for r in priors_minmax]
@@ -115,68 +195,102 @@ class MN_IGM_DLA_solver(Solver):
             if self.mpl_style:
                 plt.style.use(self.mpl_style)
             sns.set_style("ticks")
+            colors = sns.color_palette()
 
-            fig, axes = plt.subplots(ncols=2, squeeze=True, gridspec_kw=dict(width_ratios=[3, 1]))
-            ax = axes[0]
-            ax_leg = axes[1]
-            ax_leg.axis("off")
-            handles = []
+            fig = plt.figure()
+            gs = fig.add_gridspec(nrows=self.n_obs, ncols=2, width_ratios=[3, 1])
+            axes = [fig.add_subplot(gs[rowi, 0]) for rowi in range(self.n_obs)]
+            axes_leg = [fig.add_subplot(gs[rowi, 1]) for rowi in range(self.n_obs)]
+            for ax_leg in axes_leg:
+                ax_leg.axis("off")
+            handles = {rowi: [] for rowi in range(self.n_obs)}
             
             z_fid = self.fixed_redshift if self.fixed_redshift else np.mean(self.get_prior_extrema("redshift"))
-            ax.plot(np.nan, np.nan, color="None", label=r"Fiducial $z = {:.6g}$:".format(z_fid))
-            if not self.model_intrinsic_spectrum:
-                ax.errorbar(self.wl_emit_intrinsic*(1.0 + z_fid), self.flux_intrinsic/(1.0 + z_fid),
-                            color='k', alpha=0.8, label="Intrinsic")
-            handles.append(ax.errorbar(self.wl_obs, self.flux, yerr=None if self.invcov else self.flux_err,
-                                        linestyle="None", marker='o', markersize=0.5, color='k', alpha=0.8,
-                                        label="Measurements"))
+            for rowi, ax, wl_obs, flux, flux_err in zip(range(self.n_obs), axes, self.wl_obs_list, self.flux_list, self.flux_err_list):
+                if not self.model_intrinsic_spectrum:
+                    ax.errorbar(self.wl_emit_intrinsic*(1.0 + z_fid), self.flux_intrinsic/(1.0 + z_fid),
+                                color='k', alpha=0.8, label="Intrinsic")
+                handles[rowi].append(ax.errorbar(wl_obs, flux, yerr=flux_err if flux_err.ndim == 1 else None,
+                                                 linestyle="None", marker='o', markersize=0.5, color='k', alpha=0.8,
+                                                 label="Measurements"))
+                
+                ax.set_xlabel(r"$\lambda_\mathrm{obs} \, (\mathrm{\AA})$")
+                ax.set_ylabel(r"$F_\lambda$")
+
+                ax.set_xlim(1100*(1.0 + z_fid), 1500*(1.0 + z_fid))
+                ax.set_ylim(np.min(flux), np.max(flux))
             
             wl_emit_range = self.wl_obs_model / (1.0 + z_fid)
             if self.add_DLA:
-                for N_HI in np.geomspace(*self.get_prior_extrema("N_HI"), 5):
-                    wl_emit_array = wl_emit_range if self.model_intrinsic_spectrum else self.wl_emit_intrinsic
-                    taui = tau_DLA(wl_emit_array=wl_emit_array, N_HI=N_HI, T=self.add_DLA["T_HI"], b_turb=0.0)
-                    
-                    theta = [np.mean(self.get_prior_extrema(p)) if p in ["C0", "beta_UV"] else np.nan for p in self.params]
-                    
-                    handles.append(ax.plot(wl_emit_array, np.exp(-taui)*self.get_intrinsic_profile(theta, wl_emit_range, z=z_fid),
-                                            alpha=0.8, label=r"$N_\mathrm{{HI}} = 10^{{{:.1f}}} \, \mathrm{{cm^{{-2}}}}$".format(np.log10(N_HI)))[0])
+                for rowi, ax in enumerate(axes):
+                    for N_HI, c in zip(np.geomspace(*self.get_prior_extrema("N_HI"), 5), sns.color_palette("Set2")):
+                        wl_emit_array = wl_emit_range if self.model_intrinsic_spectrum else self.wl_emit_intrinsic
+                        taui = tau_DLA(wl_emit_array=wl_emit_array, N_HI=N_HI, T=self.add_DLA["T_HI"], b_turb=0.0)
+                        
+                        theta = [np.mean(self.get_prior_extrema(p)) if p in ["C0", "beta_UV"] else np.nan for p in self.params]
+                        
+                        handles[rowi].append(ax.plot(wl_emit_array * (1.0 + z_fid), np.exp(-taui)*self.get_intrinsic_profile(theta, wl_emit_array, z=z_fid),
+                                                     linestyle='-.', color=c, alpha=0.8,
+                                                     label=r"$N_\mathrm{{HI}} = 10^{{{:.1f}}} \, \mathrm{{cm^{{-2}}}}$".format(np.log10(N_HI)))[0])
 
-            priors_minmax = [self.get_prior_extrema(param) for param in self.params]
-            for z, ls in zip([self.fixed_redshift] if self.fixed_redshift else [z_fid, *self.get_prior_extrema("redshift")], ['-', '--', ':']):
-                ax.plot(np.nan, np.nan, color="None", alpha=0, label=r"$z = {:.6g}$:".format(z))
-                z_list = [] if self.fixed_redshift else [z]
+            for z, ls in zip([self.fixed_redshift] if self.fixed_redshift else sorted([z_fid, *self.get_prior_extrema("redshift")]),
+                             ['-', '--', ':']):
+                for rowi in range(self.n_obs):
+                    handles[rowi].append(ax.plot(np.nan, np.nan, color="None", alpha=0, label=r"$z = {:.6g}$:".format(z))[0])
                 
-                model_spectrum = self.get_profile(z_list + [r[0] for r, p in zip(priors_minmax, self.params) if p != "redshift"], return_profile="model_spectrum")
-                label = ",\n".join([r"{} = {}$".format(l[:-1], r[0]) for r, p, l in zip(priors_minmax, self.params, self.math_labels) if p != "redshift"])
-                handles.append(ax.plot(self.wl_obs_model, model_spectrum, drawstyle="steps-mid", linestyle=ls, alpha=0.8, label=label)[0])
+                priors_minmax = []
+                for param in self.params:
+                    if param == "redshift":
+                        priors_minmax.append([z, z])
+                    elif param == "N_HI":
+                        priors_minmax.append([0.0, 0.0])
+                    else:
+                        priors_minmax.append(self.get_prior_extrema(param))
                 
-                model_spectrum = self.get_profile(z_list + [0.5*(r[0]+r[1]) for r, p in zip(priors_minmax, self.params) if p != "redshift"], return_profile="model_spectrum")
-                label = ",\n".join([r"{} = {}$".format(l[:-1], 0.5*(r[0]+r[1])) for r, p, l in zip(priors_minmax, self.params, self.math_labels) if p != "redshift"])
-                handles.append(ax.plot(self.wl_obs_model, model_spectrum, drawstyle="steps-mid", linestyle=ls, alpha=0.8, label=label)[0])
+                profiles = self.get_profile([r[0] for r in priors_minmax], return_profile="all")
+                for rowi, ax, obs_ID, wl_obs, wl_obs_rebin in zip(range(self.n_obs), axes, self.obs_IDs, self.wl_obs_list, self.wl_obs_rebin_list):
+                    ax.plot(wl_obs, profiles["observed_spectrum{}".format(obs_ID)], drawstyle="steps-mid",
+                            linestyle=ls, color=colors[0], alpha=0.8)
+                    handles[rowi].append(ax.plot(wl_obs_rebin, profiles["model_spectrum{}".format(obs_ID)], drawstyle="steps-mid",
+                                                 linestyle=ls, color=colors[0], alpha=0.8, label=obs_ID.replace('_', "Obs. ") + " (min.)")[0])
                 
-                model_spectrum = self.get_profile(z_list + [r[1] for r, p in zip(priors_minmax, self.params) if p != "redshift"], return_profile="model_spectrum")
-                label = ",\n".join([r"{} = {}$".format(l[:-1], r[1]) for r, p, l in zip(priors_minmax, self.params, self.math_labels) if p != "redshift"])
-                handles.append(ax.plot(self.wl_obs_model, model_spectrum, drawstyle="steps-mid", linestyle=ls, alpha=0.8, label=label)[0])
+                profiles = self.get_profile([0.5*(r[0]+r[1]) for r in priors_minmax], return_profile="all")
+                for rowi, ax, obs_ID, wl_obs, wl_obs_rebin in zip(range(self.n_obs), axes, self.obs_IDs, self.wl_obs_list, self.wl_obs_rebin_list):
+                    ax.plot(wl_obs, profiles["observed_spectrum{}".format(obs_ID)], drawstyle="steps-mid",
+                            linestyle=ls, color=colors[1], alpha=0.8)
+                    handles[rowi].append(ax.plot(wl_obs_rebin, profiles["model_spectrum{}".format(obs_ID)], drawstyle="steps-mid",
+                                                 linestyle=ls, color=colors[1], alpha=0.8, label=obs_ID.replace('_', "Obs. ") + " (mean)")[0])
+                
+                profiles = self.get_profile([r[1] for r in priors_minmax], return_profile="all")
+                for rowi, ax, obs_ID, wl_obs, wl_obs_rebin in zip(range(self.n_obs), axes, self.obs_IDs, self.wl_obs_list, self.wl_obs_rebin_list):
+                    ax.plot(wl_obs, profiles["observed_spectrum{}".format(obs_ID)], drawstyle="steps-mid",
+                            linestyle=ls, color=colors[2], alpha=0.8)
+                    handles[rowi].append(ax.plot(wl_obs_rebin, profiles["model_spectrum{}".format(obs_ID)], drawstyle="steps-mid",
+                                                 linestyle=ls, color=colors[2], alpha=0.8, label=obs_ID.replace('_', "Obs. ") + " (max.)")[0])
 
-            ax.set_xlabel(r"$\lambda_\mathrm{obs} \, (\mathrm{\AA})$")
-            ax.set_ylabel(r"$F_\lambda$")
-
-            ax.set_xlim(1100*(1.0 + z_fid), 1500*(1.0 + z_fid))
-            ax.set_ylim(np.min(self.flux), np.max(self.flux))
-
-            ax_leg.legend(handles=handles, loc="center", fontsize="xx-small")
+            for rowi, ax_leg in enumerate(axes_leg):
+                ax_leg.legend(handles=handles[rowi], loc="center", fontsize="xx-small")
             
             plt.show()
             plt.close(fig)
             exit()
-
-        self.mpi_synchronise(self.mpi_comm)
-        super().__init__(n_dims=self.n_dims, use_MPI=self.mpi_run, **solv_kwargs)
-        if self.mpi_run:
-            self.samples = self.mpi_comm.bcast(self.samples, root=0)
-        self.mpi_synchronise(self.mpi_comm)
-        self.fitting_complete = True
+        
+        if minimise_chi2:
+            if self.mpi_rank == 0:
+                bounds = [self.get_prior_extrema(param) for param in self.params]
+                res = minimize(self.get_chi2, x0=np.mean(bounds, axis=1), bounds=bounds)
+                if self.verbose:
+                    print(res.message)
+                    print("Parameter values at minimum χ^2 = {}:".format(self.get_chi2(res.x)))
+                    print(*["{:<5}{}: {}".format(*x) for x in zip(range(self.n_dims), self.params, res.x)], sep='\n')
+                self.fitting_complete = False
+        else:
+            self.mpi_synchronise(self.mpi_comm)
+            super().__init__(n_dims=self.n_dims, use_MPI=self.mpi_run, **solv_kwargs)
+            if self.mpi_run:
+                self.samples = self.mpi_comm.bcast(self.samples, root=0)
+            self.mpi_synchronise(self.mpi_comm)
+            self.fitting_complete = True
 
     def mpi_calculate(self, func, samples=None, fill_value=np.nan, **func_kwargs):
         if samples is None:
@@ -514,64 +628,91 @@ class MN_IGM_DLA_solver(Solver):
 
             profiles = self.mpi_calculate(self.get_profile, return_profile="all")
             if self.mpi_rank == 0:
-                observed_spectrum_samples = profiles["observed_spectrum"]
-                model_spectrum_samples = profiles["model_spectrum"]
-                if self.add_IGM:
-                    igm_transm_samples = profiles["igm_transmission"]
+                for p in profiles:
+                    if "observed_spectrum" in p or "model_spectrum" in p:
+                        # Rescale spectra to original flux units
+                        profiles[p] /= self.conv
+                
+                if self.verbose:
+                    print("Finished calculations! Analysing profiles...")
+                
+                for oi, obs_ID, wl_obs_rebin, flux, n_chan in zip(range(self.n_obs), self.obs_IDs, self.wl_obs_rebin_list, self.flux_list, self.n_chan_list):
+                    rdict["wl_obs_model{}".format(obs_ID)] = wl_obs_rebin
+                    rdict["model_spectrum{}_median".format(obs_ID)] = np.median(profiles["model_spectrum{}".format(obs_ID)], axis=0)
+                    rdict["observed_spectrum{}_median".format(obs_ID)] = np.median(profiles["observed_spectrum{}".format(obs_ID)], axis=0)
+                    diff = flux - rdict["observed_spectrum{}_median".format(obs_ID)] * self.conv
+
+                    rdict["chi2{}".format(obs_ID)] = self.get_chi2(diff=diff, flux_err=self.flux_err_list[oi])
+                    rdict["n_chan{}".format(obs_ID)] = n_chan
+                    n_dof = n_chan - self.n_dims
+                    rdict["red_chi2{}".format(obs_ID)] = rdict["chi2{}".format(obs_ID)] / n_dof
+                    if self.verbose:
+                        print("Best-fit χ^2 of observation {:d} ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(oi+1,
+                                                                                    n_chan, self.n_dims, rdict["chi2{}".format(obs_ID)]))
+                        print("Best-fit reduced χ^2 of observation {:d} ({:d} DOF): {:.1f}".format(oi+1, n_dof, rdict["red_chi2{}".format(obs_ID)]))
+
+                    rdict["model_spectrum{}_lowerr".format(obs_ID)] = rdict["model_spectrum{}_median".format(obs_ID)] - np.percentile(profiles["model_spectrum{}".format(obs_ID)], 0.5*(100-68.2689), axis=0)
+                    rdict["model_spectrum{}_uperr".format(obs_ID)] = np.percentile(profiles["model_spectrum{}".format(obs_ID)], 0.5*(100+68.2689), axis=0) - rdict["model_spectrum{}_median".format(obs_ID)]
+                    del profiles["model_spectrum{}".format(obs_ID)]
+                    rdict["observed_spectrum{}_lowerr".format(obs_ID)] = rdict["observed_spectrum{}_median".format(obs_ID)] - np.percentile(profiles["observed_spectrum{}".format(obs_ID)], 0.5*(100-68.2689), axis=0)
+                    rdict["observed_spectrum{}_uperr".format(obs_ID)] = np.percentile(profiles["observed_spectrum{}".format(obs_ID)], 0.5*(100+68.2689), axis=0) - rdict["observed_spectrum{}_median".format(obs_ID)]
+                    del profiles["observed_spectrum{}".format(obs_ID)]
+                
+                if self.n_obs > 1:
+                    rdict["chi2"] = np.sum([rdict["chi2{}".format(obs_ID)] for obs_ID in self.obs_IDs])
+                    n_dof = self.n_chan - self.n_dims
+                    rdict["red_chi2"] = rdict["chi2"] / n_dof
+                    if self.verbose:
+                        print("Total best-fit χ^2 ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(self.n_chan, self.n_dims, rdict["chi2"]))
+                        print("Total best-fit reduced χ^2 ({:d} DOF): {:.1f}".format(n_dof, rdict["red_chi2"]))
+                
                 if self.add_DLA:
-                    dla_transm_samples = profiles["dla_transmission"]
+                    rdict["dla_transm_median"] = np.median(profiles["dla_transmission"], axis=0)
+                    rdict["dla_transm_lowerr"] = rdict["dla_transm_median"] - np.percentile(profiles["dla_transmission"], 0.5*(100-68.2689), axis=0)
+                    rdict["dla_transm_uperr"] = np.percentile(profiles["dla_transmission"], 0.5*(100+68.2689), axis=0) - rdict["dla_transm_median"]
+                    del profiles["dla_transmission"]
+                
                 if self.add_Lya:
                     # Only consider wavelength region of ±5000 km/s around Lyα
                     Lya_reg = (self.wl_obs_model/(1.0+self.z_min) >= 1196.0) * (self.wl_obs_model/(1.0+self.z_max) <= 1236.0)
                     rdict["wl_obs_model_Lya"] = self.wl_obs_model[Lya_reg]
                     Lya_intr_profile_samples = profiles["Lya_profile"][:, Lya_reg]
-                del profiles
-            
-                if self.verbose:
-                    print("Finished calculations! Analysing profiles...")
+                    del profiles["Lya_profile"]
 
-                rdict["model_spectrum_median"] = np.median(model_spectrum_samples, axis=0)
-                rdict["observed_spectrum_median"] = np.median(observed_spectrum_samples, axis=0)
-                rdict["chi2"] = self.calc_chi2(self.flux - rdict["observed_spectrum_median"])
-                n_dof = self.n_chan - self.n_dims
-                rdict["red_chi2"] = rdict["chi2"] / n_dof
-                if self.verbose:
-                    print("Best-fit χ^2 ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(self.n_chan, self.n_dims, rdict["chi2"]))
-                    print("Best-fit reduced χ^2 ({:d} DOF): {:.1f}".format(n_dof, rdict["red_chi2"]))
-
-                rdict["model_spectrum_lowerr"] = rdict["model_spectrum_median"] - np.percentile(model_spectrum_samples, 0.5*(100-68.2689), axis=0)
-                rdict["model_spectrum_uperr"] = np.percentile(model_spectrum_samples, 0.5*(100+68.2689), axis=0) - rdict["model_spectrum_median"]
-                del model_spectrum_samples
-                rdict["observed_spectrum_lowerr"] = rdict["observed_spectrum_median"] - np.percentile(observed_spectrum_samples, 0.5*(100-68.2689), axis=0)
-                rdict["observed_spectrum_uperr"] = np.percentile(observed_spectrum_samples, 0.5*(100+68.2689), axis=0) - rdict["observed_spectrum_median"]
-                del observed_spectrum_samples
-                
-                if self.add_DLA:
-                    rdict["dla_transm_median"] = np.median(dla_transm_samples, axis=0)
-                    rdict["dla_transm_lowerr"] = rdict["dla_transm_median"] - np.percentile(dla_transm_samples, 0.5*(100-68.2689), axis=0)
-                    rdict["dla_transm_uperr"] = np.percentile(dla_transm_samples, 0.5*(100+68.2689), axis=0) - rdict["dla_transm_median"]
-                    del dla_transm_samples
-                
-                if self.add_Lya:
                     Lya_F_intr_samples = self.get_Lya_strength(self.samples.transpose()) / self.conv
                     rdict["Lya_F_intr_perc"] = np.percentile(Lya_F_intr_samples, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)])
                     rdict["Lya_F_intr_median"] = rdict["Lya_F_intr_perc"][1]
                     rdict["Lya_F_intr_lowerr"], rdict["Lya_F_intr_uperr"] = np.diff(rdict["Lya_F_intr_perc"])
+                    
+                    Lya_cont_samples = self.get_intrinsic_profile(self.samples.transpose(), wl_Lya, frame="intrinsic") / self.conv
+                    rdict["Lya_EW_intr_perc"] = np.percentile(Lya_F_intr_samples / Lya_cont_samples, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)])
+                    rdict["Lya_EW_intr_median"] = rdict["Lya_EW_intr_perc"][1]
+                    rdict["Lya_EW_intr_lowerr"], rdict["Lya_EW_intr_uperr"] = np.diff(rdict["Lya_EW_intr_perc"])
                     
                     norm = np.max(Lya_intr_profile_samples, axis=1).reshape(n_samples, 1)
                     Lya_intr_profile_samples_perc = np.percentile(Lya_intr_profile_samples/norm, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)], axis=0)
                     rdict["Lya_intr_profile_median"] = Lya_intr_profile_samples_perc[1]
                     rdict["Lya_intr_profile_lowerr"], rdict["Lya_intr_profile_uperr"] = np.diff(Lya_intr_profile_samples_perc, axis=0)
                     
-                    Lya_transm_profile_samples = Lya_intr_profile_samples * igm_transm_samples[:, Lya_reg]
+                    Lya_transm_profile_samples = Lya_intr_profile_samples * profiles["igm_transmission"][:, Lya_reg]
                     Lya_transm_profile_samples_perc = np.percentile(Lya_transm_profile_samples/norm, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)], axis=0)
                     rdict["Lya_transm_profile_median"] = Lya_transm_profile_samples_perc[1]
                     rdict["Lya_transm_profile_lowerr"], rdict["Lya_transm_profile_uperr"] = np.diff(Lya_transm_profile_samples_perc, axis=0)
                     
+                    # Find the observed Lyα wavelength
+                    Lya_wl_obs_samples = rdict["wl_obs_model_Lya"][np.argmax(Lya_transm_profile_samples, axis=1)]
+                    rdict["Lya_wl_obs_perc"] = np.percentile(Lya_wl_obs_samples, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)])
+                    rdict["Lya_wl_obs_median"] = rdict["Lya_wl_obs_perc"][1]
+                    rdict["Lya_wl_obs_lowerr"], rdict["Lya_wl_obs_uperr"] = np.diff(rdict["Lya_wl_obs_perc"])
+                    if self.verbose:
+                        print("Observed Lyα wavelength: {:.3g} -{:.3g} +{:.3g} μm".format(rdict["Lya_wl_obs_perc"][1],
+                                                                                            *np.diff(rdict["Lya_wl_obs_perc"])))
+                    
                     Lya_f_esc_samples = np.sum(Lya_transm_profile_samples, axis=1) / np.sum(Lya_intr_profile_samples, axis=1)
                     rdict["Lya_intr_profile_samples"] = Lya_intr_profile_samples
                     rdict["Lya_transm_profile_samples"] = Lya_transm_profile_samples
-                    del Lya_intr_profile_samples, Lya_transm_profile_samples
+                    del Lya_transm_profile_samples
+                    
                     rdict["Lya_f_esc_perc"] = np.percentile(Lya_f_esc_samples, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)])
                     rdict["Lya_f_esc_median"] = rdict["Lya_f_esc_perc"][1]
                     rdict["Lya_f_esc_lowerr"], rdict["Lya_f_esc_uperr"] = np.diff(rdict["Lya_f_esc_perc"])
@@ -580,28 +721,25 @@ class MN_IGM_DLA_solver(Solver):
                     rdict["Lya_F_obs_perc"] = np.percentile(Lya_F_obs_samples, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)])
                     rdict["Lya_F_obs_median"] = rdict["Lya_F_obs_perc"][1]
                     rdict["Lya_F_obs_lowerr"], rdict["Lya_F_obs_uperr"] = np.diff(rdict["Lya_F_obs_perc"])
+                    
+                    rdict["Lya_EW_obs_perc"] = np.percentile(Lya_F_obs_samples / Lya_cont_samples, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)])
+                    rdict["Lya_EW_obs_median"] = rdict["Lya_EW_obs_perc"][1]
+                    rdict["Lya_EW_obs_lowerr"], rdict["Lya_EW_obs_uperr"] = np.diff(rdict["Lya_EW_obs_perc"])
                     if self.verbose:
                         print("Observed Lyα flux: {:.3g} -{:.3g} +{:.3g} 10^{:d} erg/s/cm^2".format(rdict["Lya_F_obs_perc"][1]*self.conv,
                                                                                                     *np.diff(rdict["Lya_F_obs_perc"])*self.conv,
                                                                                                     int(-np.log10(self.conv))))
+                        print("Intrinsic Lyα EW: {:.3g} -{:.3g} +{:.3g} Å".format(rdict["Lya_EW_intr_perc"][1],
+                                                                                  *np.diff(rdict["Lya_EW_intr_perc"])))
+                        print("Observed Lyα EW: {:.3g} -{:.3g} +{:.3g} Å".format(rdict["Lya_EW_obs_perc"][1],
+                                                                                 *np.diff(rdict["Lya_EW_obs_perc"])))
                         print("Lyα escape fraction: {:.3g} -{:.3g} +{:.3g}".format(rdict["Lya_f_esc_perc"][1], *np.diff(rdict["Lya_f_esc_perc"])))
-                    
-                    # Find the observed Lyα wavelength (in micron)
-                    z_samples = self.fixed_redshift if self.fixed_redshift else self.samples[:, self.params.index("redshift")]
-                    Lya_wl_obs_samples = self.get_Lya_wl_emit(self.samples.transpose(), z=z_samples) * (1.0 + z_samples) / 1e4
-                    
-                    rdict["Lya_wl_obs_perc"] = np.percentile(Lya_wl_obs_samples, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)])
-                    rdict["Lya_wl_obs_median"] = rdict["Lya_wl_obs_perc"][1]
-                    rdict["Lya_wl_obs_lowerr"], rdict["Lya_wl_obs_uperr"] = np.diff(rdict["Lya_wl_obs_perc"])
-                    if self.verbose:
-                        print("Observed Lyα wavelength: {:.3g} -{:.3g} +{:.3g} μm".format(rdict["Lya_wl_obs_perc"][1],
-                                                                                            *np.diff(rdict["Lya_wl_obs_perc"])))
 
                 if self.add_IGM:
-                    rdict["igm_transm_median"] = np.median(igm_transm_samples, axis=0)
-                    rdict["igm_transm_lowerr"] = rdict["igm_transm_median"] - np.percentile(igm_transm_samples, 0.5*(100-68.2689), axis=0)
-                    rdict["igm_transm_uperr"] = np.percentile(igm_transm_samples, 0.5*(100+68.2689), axis=0) - rdict["igm_transm_median"]
-                    del igm_transm_samples
+                    rdict["igm_transm_median"] = np.median(profiles["igm_transmission"], axis=0)
+                    rdict["igm_transm_lowerr"] = rdict["igm_transm_median"] - np.percentile(profiles["igm_transmission"], 0.5*(100-68.2689), axis=0)
+                    rdict["igm_transm_uperr"] = np.percentile(profiles["igm_transmission"], 0.5*(100+68.2689), axis=0) - rdict["igm_transm_median"]
+                    del profiles["igm_transmission"]
                     
                     # Compute flux profiles at fixed x_HI = 0.01, 0.1, 1.0; fix redshift and intrinsic spectrum, but record initial values
                     redshift_prior_init = self.redshift_prior.copy()
@@ -631,9 +769,14 @@ class MN_IGM_DLA_solver(Solver):
                         self.add_IGM["fixed_x_HI_global"] = x_HI
 
                         self.compute_IGM_curves(verbose=False)
-                        rdict["model_spectrum_fixed_xHI" + x_HI_key] = self.get_profile(theta=None, return_profile="model_spectrum")
-                        rdict["chi2_fixed_xHI" + x_HI_key] = self.calc_chi2(self.flux - self.get_profile(theta=None))
-                        print("χ^2 for fixed x_HI = {:.3g}: {:.1f}".format(x_HI, rdict["chi2_fixed_xHI" + x_HI_key]))
+                        observed_profiles = self.get_profile(theta=None)
+                        model_profiles = self.get_profile(theta=None, return_profile="model_spectrum")
+                        for oi, obs_ID in enumerate(self.obs_IDs):
+                            rdict["model_spectrum{}_fixed_xHI{}".format(obs_ID, x_HI_key)] = model_profiles["model_spectrum{}".format(obs_ID)]
+                            diff = self.flux_list[oi] - observed_profiles["observed_spectrum{}".format(obs_ID)]
+                            rdict["chi2{}_fixed_xHI{}".format(obs_ID, x_HI_key)] = self.get_chi2(diff=diff, flux_err=self.flux_err_list[oi])
+                            if self.verbose:
+                                print("χ^2 of observation {:d} for fixed x_HI = {:.3g}: {:.1f}".format(oi+1, x_HI, rdict["chi2{}_fixed_xHI{}".format(obs_ID, x_HI_key)]))
                     
                     # Reset values
                     self.redshift_prior = redshift_prior_init
@@ -660,57 +803,75 @@ class MN_IGM_DLA_solver(Solver):
         
         return (rdict, params_vals, params_labs)
     
-    def set_wl_arrays(self, wl_obs):
-        # Set observed wavelength array, assuring it is covered by the intrinsic spectrum and does not have any major gaps
-        self.wl_obs = wl_obs
-        self.n_chan = self.wl_obs.size
-        if not self.model_intrinsic_spectrum:
-            assert np.min(self.wl_emit_intrinsic) <= np.min(self.wl_obs / (1.0 + self.z_max))
-            assert np.max(self.wl_emit_intrinsic) >= np.max(self.wl_obs / (1.0 + self.z_min))
-        assert np.all(np.diff(self.wl_obs) < 2 * median_filter(self.wl_obs[:-1], size=10))
-
-        if self.convolve:
-            self.wl_obs_model = self.get_highres_wl_array(wl_obs=self.wl_obs)
-        else:
-            self.wl_obs_model = self.wl_obs
+    def set_wl_arrays(self):
+        self.n_res = self.convolve.get("n_res", 10.0)
+        self.wl_obs_model = self.get_highres_wl_array()
+        self.wl_obs_rebin_list = [self.get_highres_wl_array(obsi=oi) for oi in range(self.n_obs)]
     
-    def get_highres_wl_array(self, wl_obs):
-        # Create higher-resolution wavelength array to convolve to lower resolution
+    def get_highres_wl_array(self, obsi=None):
+        # Create higher-resolution wavelength array to be convolved to lower resolution
         assert self.convolve
         wl_obs_bin_edges = []
-        wl = np.min(wl_obs) - 5 * np.min(wl_obs) / np.min(self.convolve["resolution_curve"])
+        wl_min = (wl_Lya - 100.0) * (1.0 + self.z_min)
+        wl_max = (wl_Lya + 100.0) * (1.0 + self.z_max)
+        R_max = self.convolve.get("R_min", 1000.0)
         
-        # Require a spectral resolution of at least R_min, need to increase the number of wavelength bins
-        dl_obs = self.wl_obs / np.interp(self.wl_obs, self.convolve["wl_obs_res"], self.convolve["resolution_curve"])
-        dl_obs_min = wl_Lya * (1.0+self.z_min) / self.convolve.get("R_min", 1000.0)
-        if self.add_Lya:
-            dl_obs_min = min(dl_obs_min, self.get_Lya_sigma_l(theta=None, get_minimum=True))
-        self.n_res = max(5.0, *dl_obs/dl_obs_min)
+        if obsi is None:
+            for oi, wl_obs in enumerate(self.wl_obs_list):
+                wl_min = min(wl_min, np.min(wl_obs) - 5 * np.min(wl_obs) / np.interp(np.min(wl_obs), self.convolve["wl_obs_res_{:d}".format(oi)], self.convolve["resolution_curve_{:d}".format(oi)]))
+                wl_max = max(wl_max, np.max(wl_obs) + 5 * np.max(wl_obs) / np.interp(np.max(wl_obs), self.convolve["wl_obs_res_{:d}".format(oi)], self.convolve["resolution_curve_{:d}".format(oi)]))
+                R_max = max(R_max, np.max(np.interp(wl_obs, self.convolve["wl_obs_res_{:d}".format(oi)], self.convolve["resolution_curve_{:d}".format(oi)])))
+
+            wl_arr = np.linspace(wl_min, wl_max, 100)
+            R = self.convolve.get("R_min", 1000.0)
+            R_arr = np.tile(R, 100)
+            if self.add_Lya:
+                R = min(4*R_max, max(R, wl_Lya / self.get_Lya_sigma_l(theta=None, get_minimum=True)))
+                sigma_Lya_max = self.get_Lya_sigma_l(theta=None, get_maximum=True)
+                wl_Lya_min = (self.get_Lya_wl_emit(theta=None, get_minimum=True) - 2*sigma_Lya_max) * (1.0 + self.z_min)
+                wl_Lya_max = (self.get_Lya_wl_emit(theta=None, get_maximum=True) + 2*sigma_Lya_max) * (1.0 + self.z_max)
+                R_arr = np.where((wl_arr > wl_Lya_min) * (wl_arr < wl_Lya_max), R, R_arr)
+            R_func = lambda wl: np.interp(wl, wl_arr, R_arr)
+        else:
+            R_func = lambda wl: np.interp(wl, self.convolve["wl_obs_res_{:d}".format(obsi)], self.convolve["resolution_curve_{:d}".format(obsi)])
+            wl_min = min(wl_min, np.min(self.wl_obs_list[obsi]) - 2 * np.min(self.wl_obs_list[obsi]) / R_func(np.min(self.wl_obs_list[obsi])))
+            wl_max = max(wl_max, np.max(self.wl_obs_list[obsi]) + 2 * np.max(self.wl_obs_list[obsi]) / R_func(np.max(self.wl_obs_list[obsi])))
         
-        while wl < np.max(wl_obs) + 5 * np.max(wl_obs) / np.min(self.convolve["resolution_curve"]):
+        wl = wl_min
+        
+        while wl < wl_max:
             wl_obs_bin_edges.append(wl)
-            wl += wl / (self.n_res * np.interp(wl, self.convolve["wl_obs_res"], self.convolve["resolution_curve"]))
+            wl += wl / (self.n_res * R_func(wl))
         
         wl_obs_bin_edges = np.array(wl_obs_bin_edges)
         assert wl_obs_bin_edges.size > 1
-        
-        return 0.5 * (wl_obs_bin_edges[:-1] + wl_obs_bin_edges[1:])
 
-    def get_Lya_wl_emit(self, theta, z, get_minimum=False):
+        wl_obs_bin_centres = 0.5 * (wl_obs_bin_edges[:-1] + wl_obs_bin_edges[1:])
+        
+        return wl_obs_bin_centres
+
+    def get_Lya_wl_emit(self, theta, z=None, get_minimum=False, get_maximum=False):
         # Obtain wavelength of Lyα emission line in the rest frame, taking any velocity shift into account
         if "fixed_wl_emit_Lya" in self.intrinsic_spectrum:
             wl_emit_Lya = self.intrinsic_spectrum["fixed_wl_emit_Lya"]
         elif "fixed_wl_obs_Lya" in self.intrinsic_spectrum:
-            wl_emit_Lya = self.intrinsic_spectrum["fixed_wl_obs_Lya"] / (1.0 + (self.z_max if get_minimum else z))
+            z = (self.z_min if get_maximum else self.z_max) if get_minimum or get_maximum else z
+            wl_emit_Lya = self.intrinsic_spectrum["fixed_wl_obs_Lya"] / (1.0 + z)
         else:
-            delta_v = self.get_prior_extrema("delta_v_Lya")[0] if get_minimum else self.get_val(theta, "delta_v_Lya")
+            if get_minimum or get_maximum:
+                if get_minimum:
+                    delta_v = self.get_prior_extrema("delta_v_Lya")[0]
+                else:
+                    delta_v = self.get_prior_extrema("delta_v_Lya")[1]
+            else:
+                delta_v = self.get_val(theta, "delta_v_Lya")
             wl_emit_Lya = wl_Lya / (1.0 - delta_v/299792.458)
         
         return wl_emit_Lya
     
-    def get_Lya_sigma_l(self, theta, z=None, wl_emit_Lya=None, get_minimum=False):
-        if get_minimum:
-            wl_emit_Lya = self.get_Lya_wl_emit(theta=None, z=z, get_minimum=True)
+    def get_Lya_sigma_l(self, theta, z=None, wl_emit_Lya=None, get_minimum=False, get_maximum=False):
+        if get_minimum or get_maximum:
+            wl_emit_Lya = self.get_Lya_wl_emit(theta=None, z=z, get_minimum=get_minimum, get_maximum=get_maximum)
         else:
             assert wl_emit_Lya is not None
         
@@ -720,8 +881,14 @@ class MN_IGM_DLA_solver(Solver):
             assert wl_emit_Lya is not None
             sigma_l = wl_emit_Lya / (299792.458/self.intrinsic_spectrum["fixed_sigma_v_Lya"] - 1.0)
         else:
-            sigma_v = self.get_prior_extrema("sigma_v_Lya")[0] if get_minimum else self.get_val(theta, "sigma_v_Lya")
-            sigma_l = wl_emit_Lya / (299792.458/sigma_v - 1.0)
+            if get_minimum or get_maximum:
+                if get_minimum:
+                    sigma_v = self.get_prior_extrema("sigma_v_Lya")[0]
+                else:
+                    sigma_v = self.get_prior_extrema("sigma_v_Lya")[1]
+            else:
+                sigma_v = self.get_val(theta, "sigma_v_Lya")
+            sigma_l = 0.0 if sigma_v == 0 else wl_emit_Lya / (299792.458/sigma_v - 1.0)
         
         return sigma_l
     
@@ -792,7 +959,7 @@ class MN_IGM_DLA_solver(Solver):
         if verbose is None:
             verbose = self.verbose
 
-        wl_obs_array = np.arange(0.95*np.min(self.wl_obs_model), 1.05*np.max(self.wl_obs_model), 0.25 * (1.0 + self.z_min))
+        wl_obs_array = self.wl_obs_model
         points = [wl_obs_array]
         self.IGM_params = ["observed_wavelength"]
 
@@ -828,7 +995,7 @@ class MN_IGM_DLA_solver(Solver):
                 assert self.add_IGM["grid_file_name"].endswith(".npz")
                 if self.mpi_rank == 0:
                     if not os.path.isfile(self.add_IGM["grid_file_name"]) and verbose:
-                        print("IGM damping-wing transmission curve(s) will be calculated and saved to {}...".format(self.add_IGM["grid_file_name"].split('/')[-1]))
+                        print("IGM damping-wing transmission curves will be calculated and saved to {}...".format(self.add_IGM["grid_file_name"].split('/')[-1]))
                     else:
                         grid_file_npz = np.load(self.add_IGM["grid_file_name"])
                         grid_points = [grid_file_npz[p + "_array"] for p in self.IGM_params]
@@ -836,18 +1003,18 @@ class MN_IGM_DLA_solver(Solver):
                         if correct_shape and np.all([np.allclose(p, gp) for p, gp in zip(points, grid_points)]):
                             calc_curves = False
                             if verbose:
-                                print("IGM damping-wing transmission curve(s) have successfully been loaded from {}...".format(self.add_IGM["grid_file_name"].split('/')[-1]))
+                                print("IGM damping-wing transmission curves have successfully been loaded from {}...".format(self.add_IGM["grid_file_name"].split('/')[-1]))
                         else:
                             if verbose:
-                                print("Failed to load IGM damping-wing transmission curve(s) from {}:".format(self.add_IGM["grid_file_name"].split('/')[-1]))
+                                print_str = "Failed to load IGM damping-wing transmission curves from {}:".format(self.add_IGM["grid_file_name"].split('/')[-1])
                                 if correct_shape:
-                                    print_str = "the grid points did not match up"
+                                    print_str += " the grid points did not match up"
                                 else:
-                                    print_str = "there is a shape mismatch (expected {} but loaded {} from disk)".format(tuple(array_sizes), tuple(gp.size for gp in grid_points))
-                                print("{}, need to recompute the curve(s)...".format(print_str, tuple(array_sizes), tuple(gp.size for gp in grid_points)))
+                                    print_str += " there is a shape mismatch (expected {} but loaded {} from disk)".format(tuple(array_sizes), tuple(gp.size for gp in grid_points))
+                                print("{}, need to recompute the curves...".format(print_str, tuple(array_sizes), tuple(gp.size for gp in grid_points)))
             else:
                 if self.mpi_rank == 0 and verbose:
-                    print("IGM damping-wing transmission curve(s) will be calculated (but not saved afterwards)...")
+                    print("IGM damping-wing transmission curves will be calculated (but not saved afterwards)...")
             
             if self.mpi_run:
                 calc_curves = self.mpi_comm.bcast(calc_curves, root=0)
@@ -856,7 +1023,7 @@ class MN_IGM_DLA_solver(Solver):
                 n_curves = np.prod(array_sizes[1:])
                 points_mg = np.meshgrid(*points, indexing="ij")
                 if self.mpi_rank == 0 and verbose:
-                    print("Computing {:d} IGM damping-wing transmission curve(s) of size {:d}{}...".format(n_curves, array_sizes[0], self.mpi_run_str))
+                    print("Computing {:d} IGM damping-wing transmission curves of size {:d}{}...".format(n_curves, array_sizes[0], self.mpi_run_str))
 
                 mg_indices_rank = [np.arange(corei, n_curves, self.mpi_ncores) for corei in range(self.mpi_ncores)]
                 IGM_damping_arrays = np.tile(np.nan, (array_sizes[0], n_curves))
@@ -901,7 +1068,7 @@ class MN_IGM_DLA_solver(Solver):
         self.IGM_damping_interp = RegularGridInterpolator(points=points, values=IGM_damping_arrays, method="linear", bounds_error=False)
 
         if self.mpi_rank == 0 and verbose:
-            print("IGM damping-wing transmission curve(s) ready!")
+            print("IGM damping-wing transmission curves ready!")
     
     def IGM_damping_transmission(self, wl_obs_model, theta_IGM):
         assert self.IGM_damping_interp is not None
@@ -1036,11 +1203,9 @@ class MN_IGM_DLA_solver(Solver):
         
         return np.exp(-tau_DLA_theta)
 
-    def get_profile(self, theta, wl_obs=None, return_profile="observed_spectrum"):
+    def get_profile(self, theta, return_profile="observed_spectrum"):
         z = self.fixed_redshift if self.fixed_redshift else self.get_val(theta, "redshift")
         wl_emit_model = self.wl_obs_model / (1.0 + z) # in Angstrom
-        if wl_obs is None:
-            wl_obs = self.wl_obs
         
         profiles = {}
         
@@ -1066,23 +1231,62 @@ class MN_IGM_DLA_solver(Solver):
             if return_profile in ["igm_transmission", "all"]:
                 profiles["igm_transmission"] = igm_transmission
         
-        if self.convolve:
-            model_spectrum = gaussian_filter1d(model_spectrum, sigma=self.n_res/(2.0 * np.sqrt(2.0 * np.log(2))),
-                                                mode="nearest", truncate=5.0)
-            
-            if return_profile in ["model_spectrum", "all"]:
-                profiles["model_spectrum"] = model_spectrum
-            if return_profile in ["observed_spectrum", "all"]:
-                # Rebin to input wavelength array
-                profiles["observed_spectrum"] = spectres(wl_obs, self.wl_obs_model, model_spectrum)
-        else:
-            profiles["model_spectrum"] = model_spectrum
-            profiles["observed_spectrum"] = model_spectrum
+        if return_profile in ["model_spectrum", "observed_spectrum", "all"]:
+            for oi, wl_obs, wl_obs_rebin in zip(range(self.n_obs), self.wl_obs_list, self.wl_obs_rebin_list):
+                # Rebin to model wavelength array for this resolution
+                smoothed_spectrum = gaussian_filter1d(spectres(wl_obs_rebin, self.wl_obs_model, model_spectrum),
+                                                      sigma=self.n_res/(2.0 * np.sqrt(2.0 * np.log(2))),
+                                                      mode="nearest", truncate=5.0)
+                
+                if return_profile in ["model_spectrum", "all"]:
+                    profiles["model_spectrum{}".format(self.obs_IDs[oi])] = smoothed_spectrum
+                if return_profile in ["observed_spectrum", "all"]:
+                    # Rebin to input wavelength array
+                    profiles["observed_spectrum{}".format(self.obs_IDs[oi])] = spectres(wl_obs, wl_obs_rebin, smoothed_spectrum)
         
         if return_profile == "all":
             return profiles
         else:
-            return profiles[return_profile]
+            return {p: profiles[p] for p in profiles if return_profile in p}
+
+    def get_chi2(self, theta=None, diff=None, flux_err=None):
+        if diff is None:
+            # Likelihood from fitting the IGM and/or DLA transmission
+            assert theta is not None
+            profiles = self.get_profile(theta)
+            diff = [flux - profiles["observed_spectrum{}".format(obs_ID)] for obs_ID, flux in zip(self.obs_IDs, self.flux_list)]
+
+        if flux_err is None:
+            flux_err = self.flux_err_list
+        
+        if hasattr(diff[0], "__len__"):
+            diff_list = diff
+            flux_err_list = flux_err
+            assert len(diff_list) == len(flux_err_list)
+        else:
+            diff_list = [diff]
+            flux_err_list = [flux_err]
+        
+        chi2 = 0.0
+        
+        for diff, flux_err in zip(diff_list, flux_err_list):
+            # Is error is given as inverse covariance matrix?
+            if flux_err.ndim == 2:
+                diff = np.where(np.isnan(diff), 0, diff)
+                chi2 += np.linalg.multi_dot([diff, flux_err, diff])
+            else:
+                chi2 += np.nansum((diff / flux_err)**2)
+
+        return chi2
+
+    def LogLikelihood(self, theta):
+        return -0.5 * self.get_chi2(theta=theta)
+    
+    def get_val(self, theta, param, get_minimum=False, get_maximum=False):
+        if get_minimum or get_maximum:
+            return self.get_prior_extrema(param)[1 if get_maximum else 0]
+        else:
+            return theta[self.params.index(param)]
     
     def set_prior(self):
         self.params = []
@@ -1185,12 +1389,6 @@ class MN_IGM_DLA_solver(Solver):
 
         self.n_dims = len(self.params)
     
-    def get_val(self, theta, param, get_minimum=False, get_maximum=False):
-        if get_minimum or get_maximum:
-            return self.get_prior_extrema(param)[1 if get_maximum else 0]
-        else:
-            return theta[self.params.index(param)]
-    
     def get_prior_extrema(self, param):
         """Function for getting the minimum and maximum of a prior. Intended for internal use.
 
@@ -1250,21 +1448,5 @@ class MN_IGM_DLA_solver(Solver):
                 raise TypeError("prior type '{}' of parameter {:d}, {}, not recognised".format(self.priors[di]["type"], di+1, self.params[di]))
         
         return cube
-
-    def calc_chi2(self, diff, err=None):
-        if err is None:
-            err = self.flux_err
-        
-        if self.invcov:
-            diff = np.where(np.isnan(diff), 0, diff)
-            return np.linalg.multi_dot([diff, err, diff])
-        else:
-            return np.nansum((diff / err)**2)
-
-    def LogLikelihood(self, theta):
-        # Likelihood from fitting the IGM and/or DLA transmission
-        diff = self.flux - self.get_profile(theta)
-        
-        return -0.5 * self.calc_chi2(diff=diff)
 
 

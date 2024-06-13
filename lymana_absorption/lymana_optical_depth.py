@@ -166,13 +166,11 @@ def tau_integral_vec(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi20
 
     dldz = c / (cosmo.H(z).to("Hz").value * (1.0 + z))
     
-    return np.trapz(
-        dldz[None, :] * x_HI[None, :] * n_H[None, :]
-        * sigma_alpha(x, T, b_turb=0.0, approximation=approximation),
-        x=z, axis=1)
+    return np.trapz(dldz[None, :] * x_HI[None, :] * n_H[None, :] * sigma_alpha(x, T, b_turb=0.0, approximation=approximation),
+                    x=z, axis=1)
 
 def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="constant", T=1e4, x_HI_global=1.0,
-            cosmo=None, z_reion=5.0, f_H=0.76, H0=70.0, Om0=0.3, Ob0=0.05, approximation="Tasitsiomi2006",
+            cosmo=None, z_reion=5.3, f_H=0.76, H0=70.0, Om0=0.3, Ob0=0.05, approximation="Tasitsiomi2006",
             use_vector=False):
     """
     
