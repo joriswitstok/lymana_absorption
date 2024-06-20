@@ -130,7 +130,7 @@ class MN_IGM_DLA_solver(Solver):
         self.intrinsic_spectrum = intrinsic_spectrum
         self.add_IGM = add_IGM
         self.add_DLA = add_DLA
-        self.add_Lya = self.model_intrinsic_spectrum and self.intrinsic_spectrum["add_Lya"]
+        self.add_Lya = self.model_intrinsic_spectrum and self.intrinsic_spectrum.get("add_Lya", False)
         if convolve is None:
             self.convolve = {}
             for oi, wl_obs in enumerate(self.wl_obs_list):
@@ -348,7 +348,8 @@ class MN_IGM_DLA_solver(Solver):
         else:
             return func_samples_dict["main"]
 
-    def analyse_posterior(self, hdi_params=None, limit_params=None, logval_params=["N_HI", "F_Lya", "xi_ion"],
+    def analyse_posterior(self, hdi_params=None, limit_params=None, plot_limits=None, exclude_params=None,
+                          lann_params=None, logval_params=["N_HI", "F_Lya", "xi_ion"],
                           plot_corner=True, fig=None, figsize=None, figname=None, showfig=False,
                           color=None, axeslabelsize=None, annlabelsize=None,
                           IGM_DLA_npz_file=None, x_HI_values=[0.0, 0.01, 0.1, 1.0]):
@@ -423,14 +424,14 @@ class MN_IGM_DLA_solver(Solver):
             math_labels = [math_labels[idx] for idx in sort_indices]
             priors_minmax = [priors_minmax[idx] for idx in sort_indices]
             
-            for param in logval_params:
-                math_labels[params.index(param)] = r"$\log_{{10}} \left( " + math_labels[params.index(param)][1:-1] + r" \right)$"
-                data[params.index(param)] = np.log10(data[params.index(param)])
-                priors_minmax[params.index(param)] = tuple(np.log10(priors_minmax[params.index(param)]))
+            for pi, param in enumerate(params):
+                if param in logval_params:
+                    math_labels[pi] = r"$\log_{{10}} \left( " + math_labels[pi][1:-1] + r" \right)$"
+                    data[pi] = np.log10(data[pi])
+                    priors_minmax[pi] = tuple(np.log10(priors_minmax[pi]))
             
-            n_dims = len(params)
             if limit_params is None:
-                param_limits = {}
+                limit_params = {}
             if hdi_params is None:
                 hdi_params = {}
                 for param in params:
@@ -443,7 +444,7 @@ class MN_IGM_DLA_solver(Solver):
             del select_data
             
             if self.verbose:
-                print("Finding best-fit values of {:d} parameters...".format(n_dims))
+                print("Finding best-fit values of {:d} parameters...".format(len(params)))
         
         param_limits = {}
         params_hpds = {}
@@ -467,6 +468,8 @@ class MN_IGM_DLA_solver(Solver):
             params_labs = None
         else:
             if plot_corner:
+                if lann_params is None:
+                    lann_params = []
                 plt, sns = import_matplotlib()
                 if self.mpl_style:
                     plt.style.use(self.mpl_style)
@@ -474,49 +477,64 @@ class MN_IGM_DLA_solver(Solver):
                 if color is None:
                     color = sns.color_palette()[0]
                 corner = import_corner()
-            
+                
+                if exclude_params is not None:
+                    plot_params = [p for p in params if p not in exclude_params]
+                    plot_data = [d for d, p in zip(data, params) if p not in exclude_params]
+                    plot_minmax = [pmm for pmm, p in zip(priors_minmax, params) if p not in exclude_params]
+                    axes_labels = [labels[pi] + math_labels[pi] for pi, p in enumerate(params) if p not in exclude_params]
+                    plot_n_dims = len(plot_params)
+
                 if self.verbose:
-                    print("Producing {:d}-parameter corner plot...".format(n_dims))
+                    print("Producing {:d}-parameter corner plot...".format(plot_n_dims))
                 
                 n_bins = max(50, n_samples//500)
-                bins = [n_bins] * n_dims
+                bins = [n_bins] * plot_n_dims
                 
                 if figsize is None:
                     figsize = (8.27/2, 8.27/2)
                 if fig is None:
                     fig = plt.figure(figsize=figsize)
                 if axeslabelsize is None:
-                    axeslabelsize = plt.rcParams("axes.labelsize")
+                    axeslabelsize = plt.rcParams["axes.labelsize"]
                 if annlabelsize is None:
-                    annlabelsize = plt.rcParams("font.size")
+                    annlabelsize = plt.rcParams["font.size"]
                 
-                if n_dims > 1:
-                    fig = corner.corner(np.transpose(data), labels=params, bins=bins, range=priors_minmax,
+                if plot_n_dims > 1:
+                    fig = corner.corner(np.transpose(plot_data), bins=bins, range=plot_minmax,
                                         fig=fig, color=color, show_titles=False)
                 else:
                     ax = fig.add_subplot(fig.add_gridspec(nrows=2, ncols=1, hspace=0, height_ratios=[1, 0])[0, :])
-                    hist, bin_edges = np.histogram(data[0], bins=bins[0], range=priors_minmax[0])
+                    hist, bin_edges = np.histogram(plot_data[0], bins=bins[0], range=plot_minmax[0])
                     ax.plot(0.5*(bin_edges[1:]+bin_edges[:-1]), gaussian_filter1d(hist, sigma=0.5), drawstyle="steps-mid", color=color)
                 
-                del data, bins
+                del plot_data, bins
 
                 # Extract the axes
-                axes_c = np.array(fig.axes).reshape((n_dims, n_dims))
+                axes_c = np.array(fig.axes).reshape((plot_n_dims, plot_n_dims))
                 
-                for ri in range(n_dims):
+                for ri in range(plot_n_dims):
                     for ci in range(ri+1):
                         axes_c[ri, ci].tick_params(axis="both", which="both", direction="in", top=ri!=ci, right=ri!=ci, labelsize=axeslabelsize)
                         axes_c[ri, ci].set_axisbelow(False)
                 
-                for ci in range(n_dims): 
-                    axes_c[-1, ci].set_xlabel(labels[ci] + math_labels[ci], fontsize=axeslabelsize)
+                if plot_limits is None:
+                    plot_limits = {}
+                
+                for pi, param in enumerate(plot_params):
+                    if param in plot_limits:
+                        plot_minmax[pi] = plot_limits[param]
+                
+                for ci in range(plot_n_dims): 
+                    axes_c[-1, ci].set_xlabel(axes_labels[ci], fontsize=axeslabelsize)
                     for ax in axes_c[ci:, ci]:
-                        ax.set_xlim(priors_minmax[ci])
-                for ri in range(1, n_dims):
-                    axes_c[ri, 0].set_ylabel(labels[ri] + math_labels[ri], fontsize=axeslabelsize)
+                        ax.set_xlim(plot_minmax[ci])
+                for ri in range(1, plot_n_dims):
+                    axes_c[ri, 0].set_ylabel(axes_labels[ri], fontsize=axeslabelsize)
                     for ax in axes_c[ri, :ri]:
-                        ax.set_ylim(priors_minmax[ri])
+                        ax.set_ylim(plot_minmax[ri])
             
+            del data, labels, priors_minmax
             if self.verbose:
                 print("Obtaining (labels for) best-fit values...\n")
 
@@ -525,7 +543,7 @@ class MN_IGM_DLA_solver(Solver):
             for pi, param in enumerate(params):
                 if param in limit_params:
                     params_vals[param + "_value"] = [param_limits[param], np.nan, np.nan]
-                    prec = max(0, 1-math.floor(np.log10(params_vals[param + "_value"][0]))) if params_vals[param + "_value"][0] > 0 else 0
+                    prec = max(0, 2-math.floor(np.log10(params_vals[param + "_value"][0])))
                     params_labs[param + "_label"] = r"{} {} {:.{prec}f}$".format(math_labels[pi][:-1], '>' if limit_params[param] < 0.5 else '<',
                                                                                  *params_vals[param + "_value"], prec=prec)
                 else:
@@ -537,13 +555,15 @@ class MN_IGM_DLA_solver(Solver):
                                                                                                                   *params_vals[param + "_value"], prec=prec)
                     
                     if self.verbose:
-                        print_str = params_labs[param + "_label"].replace('$', '').replace('{', '').replace("_-", ' -').replace('^', ' ')
-                        print_str = print_str.replace('}', '').replace(r"\mathrm", '').replace(r"\AA", 'Å')
+                        print_str = params_labs[param + "_label"].replace('$', '').replace("_{", ' ').replace("^{", ' ')
+                        print_str = print_str.replace('{', '').replace('}', '').replace(r"\mathrm", '').replace(r"\AA", 'Å')
                         print_str = print_str.replace(r"\left", '').replace(r"\right", '').replace(r"\, ", '').replace(r"\log", "log")
                         print("Best-fit values of {}:\n{}".format(param, print_str))
-                
-                if plot_corner:
-                    ha = "left" if param in logval_params or param == "C0" else "center"
+            del params
+
+            if plot_corner:
+                for pi, param in enumerate(plot_params):
+                    ha = "left" if param in lann_params else "center"
                     axes_c[pi, pi].annotate(text=params_labs[param + "_label"],
                                             xy=(0 if ha == "left" else 0.5, 1), xytext=(4 if ha == "left" else 0, 4),
                                             xycoords="axes fraction", textcoords="offset points",
@@ -557,47 +577,46 @@ class MN_IGM_DLA_solver(Solver):
                     else:
                         if len(modes_mu) == 1:
                             for ax in axes_c[pi:, pi]:
-                                ax.set_xlim(max(priors_minmax[pi][0], params_vals[param + "_value"][0]-5*params_vals[param + "_value"][1]),
-                                            min(priors_minmax[pi][1], params_vals[param + "_value"][0]+5*params_vals[param + "_value"][2]))
+                                ax.set_xlim(max(plot_minmax[pi][0], params_vals[param + "_value"][0]-5*params_vals[param + "_value"][1]),
+                                            min(plot_minmax[pi][1], params_vals[param + "_value"][0]+5*params_vals[param + "_value"][2]))
                             for ax in axes_c[pi, :pi]:
-                                ax.set_ylim(max(priors_minmax[pi][0], params_vals[param + "_value"][0]-5*params_vals[param + "_value"][1]),
-                                            min(priors_minmax[pi][1], params_vals[param + "_value"][0]+5*params_vals[param + "_value"][2]))
+                                ax.set_ylim(max(plot_minmax[pi][0], params_vals[param + "_value"][0]-5*params_vals[param + "_value"][1]),
+                                            min(plot_minmax[pi][1], params_vals[param + "_value"][0]+5*params_vals[param + "_value"][2]))
 
                         axes_c[pi, pi].axvline(x=modes_mu[0], color="grey", alpha=0.8)
                         axes_c[pi, pi].axvline(x=hpd_mu[0][0], linestyle='--', color="grey", alpha=0.8)
                         axes_c[pi, pi].axvline(x=hpd_mu[0][1], linestyle='--', color="grey", alpha=0.8)
-            
-            if self.verbose:
-                print("\nAnnotating corner plot...")
-            
-            if plot_corner:
+
+                if self.verbose:
+                    print("\nAnnotating corner plot...")
+                
                 # Loop over the histograms
-                for ri in range(n_dims):
+                for ri in range(plot_n_dims):
                     for ci in range(ri):
-                        if params[ci] == "redshift_DLA" and self.fixed_redshift:
+                        if plot_params[ci] == "redshift_DLA" and self.fixed_redshift:
                             axes_c[ri, ci].axvline(x=self.fixed_redshift, linestyle=':', color='k', alpha=0.8)
-                        if params[ri] == "redshift_DLA" and self.fixed_redshift:
+                        if plot_params[ri] == "redshift_DLA" and self.fixed_redshift:
                             axes_c[ri, ci].axhline(y=self.fixed_redshift, linestyle=':', color='k', alpha=0.8)
                         
-                        if params[ri] in limit_params:
-                            axes_c[ri, ci].axvline(x=params_vals[params[ri] + "_value"][0], linestyle='--', color="grey", alpha=0.8)
+                        if plot_params[ri] in limit_params:
+                            axes_c[ri, ci].axvline(x=params_vals[plot_params[ri] + "_value"][0], linestyle='--', color="grey", alpha=0.8)
                         else:
-                            modes_rmu, hpd_rmu = params_hpds.get(params[ri], params_perc[params[ri]])
+                            modes_rmu, hpd_rmu = params_hpds.get(plot_params[ri], params_perc[plot_params[ri]])
                             
                             axes_c[ri, ci].axhline(y=modes_rmu[0], color="grey", alpha=0.8)
                             axes_c[ri, ci].axhline(y=hpd_rmu[0][0], linestyle='--', color="grey", alpha=0.8)
                             axes_c[ri, ci].axhline(y=hpd_rmu[0][1], linestyle='--', color="grey", alpha=0.8)
                         
-                        if params[ci] in limit_params:
-                            axes_c[ri, ci].axvline(x=params_vals[params[ci] + "_value"][0], linestyle='--', color="grey", alpha=0.8)
+                        if plot_params[ci] in limit_params:
+                            axes_c[ri, ci].axvline(x=params_vals[plot_params[ci] + "_value"][0], linestyle='--', color="grey", alpha=0.8)
                         else:
-                            modes_cmu, hpd_cmu = params_hpds.get(params[ci], params_perc[params[ci]])
+                            modes_cmu, hpd_cmu = params_hpds.get(plot_params[ci], params_perc[plot_params[ci]])
                             
                             axes_c[ri, ci].axvline(x=modes_cmu[0], color="grey", alpha=0.8)
                             axes_c[ri, ci].axvline(x=hpd_cmu[0][0], linestyle='--', color="grey", alpha=0.8)
                             axes_c[ri, ci].axvline(x=hpd_cmu[0][1], linestyle='--', color="grey", alpha=0.8)
                             
-                        if not params[ri] in limit_params and not params[ci] in limit_params:
+                        if not plot_params[ri] in limit_params and not plot_params[ci] in limit_params:
                             # Modes/medians
                             axes_c[ri, ci].plot(modes_cmu[0], modes_rmu[0], color="grey", marker='s', mfc="None", mec="grey", alpha=0.8)
             
@@ -607,10 +626,11 @@ class MN_IGM_DLA_solver(Solver):
                     plt.show()
 
                 plt.close(fig)
-                del fig, axes_c, ax, params, labels, math_labels, priors_minmax
+                del fig, axes_c, ax, plot_params
                 
                 if self.verbose:
                     print("Saved and closed corner plot!")
+            del math_labels, plot_minmax
         
         self.mpi_synchronise(self.mpi_comm)
         if self.mpi_run:
@@ -705,8 +725,8 @@ class MN_IGM_DLA_solver(Solver):
                     rdict["Lya_wl_obs_median"] = rdict["Lya_wl_obs_perc"][1]
                     rdict["Lya_wl_obs_lowerr"], rdict["Lya_wl_obs_uperr"] = np.diff(rdict["Lya_wl_obs_perc"])
                     if self.verbose:
-                        print("Observed Lyα wavelength: {:.3g} -{:.3g} +{:.3g} μm".format(rdict["Lya_wl_obs_perc"][1],
-                                                                                            *np.diff(rdict["Lya_wl_obs_perc"])))
+                        print("Observed Lyα wavelength: {:.3g} -{:.3g} +{:.3g} μm".format(rdict["Lya_wl_obs_perc"][1]/1e4,
+                                                                                            *np.diff(rdict["Lya_wl_obs_perc"])/1e4))
                     
                     Lya_f_esc_samples = np.sum(Lya_transm_profile_samples, axis=1) / np.sum(Lya_intr_profile_samples, axis=1)
                     rdict["Lya_intr_profile_samples"] = Lya_intr_profile_samples
@@ -746,8 +766,10 @@ class MN_IGM_DLA_solver(Solver):
                     self.redshift_prior = {"type": "fixed", "params": [self.fixed_redshift if self.fixed_redshift else params_vals["redshift_value"][0]]}
                     if self.model_intrinsic_spectrum:
                         intrinsic_spectrum_init = self.intrinsic_spectrum.copy()
-                        self.intrinsic_spectrum["fixed_C0"] = params_vals["C0_value"][0]
-                        self.intrinsic_spectrum["fixed_beta_UV"] = params_vals["beta_UV_value"][0]
+                        if "C0" in self.params:
+                            self.intrinsic_spectrum["fixed_C0"] = params_vals["C0_value"][0]
+                        if "beta_UV" in self.params:
+                            self.intrinsic_spectrum["fixed_beta_UV"] = params_vals["beta_UV_value"][0]
                     
                     # Reset IGM properties, but record initial values
                     add_IGM_init = self.add_IGM.copy()
@@ -1320,20 +1342,20 @@ class MN_IGM_DLA_solver(Solver):
                 self.priors.append(self.intrinsic_spectrum["F_Lya_prior"])
                 self.labels.append(r"Intrinsic Ly$\mathrm{\alpha}$ flux" + '\n')
                 self.math_labels.append(r"$F_\mathrm{{Ly \alpha}} \, (\mathrm{{erg \, s^{{-1}} \, cm^{{-2}}}})$")
-            if not "fixed_wl_emit_Lya" in self.intrinsic_spectrum and not "fixed_wl_obs_Lya" in self.intrinsic_spectrum:
-                assert "delta_v_Lya_prior" in self.intrinsic_spectrum
-                if self.intrinsic_spectrum["delta_v_Lya_prior"]["type"] == "fixed":
-                    self.intrinsic_spectrum["fixed_wl_emit_Lya"] = wl_Lya / (1.0 - self.intrinsic_spectrum["delta_v_Lya_prior"]["params"][0]/299792.458)
-                else:
-                    self.params.append("delta_v_Lya")
-                    self.priors.append(self.intrinsic_spectrum["delta_v_Lya_prior"])
-                    self.labels.append(r"Ly$\mathrm{\alpha}$ velocity offset" + '\n')
-                    self.math_labels.append(r"$\Delta v_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
-            if not "fixed_sigma_l_Lya" in self.intrinsic_spectrum and not "fixed_sigma_v_Lya" in self.intrinsic_spectrum:
-                self.priors.append(self.intrinsic_spectrum["sigma_v_Lya_prior"])
-                self.params.append("sigma_v_Lya")
-                self.labels.append(r"Ly$\mathrm{\alpha}$ velocity dispersion" + '\n')
-                self.math_labels.append(r"$\sigma_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
+                if not "fixed_wl_emit_Lya" in self.intrinsic_spectrum and not "fixed_wl_obs_Lya" in self.intrinsic_spectrum:
+                    assert "delta_v_Lya_prior" in self.intrinsic_spectrum
+                    if self.intrinsic_spectrum["delta_v_Lya_prior"]["type"] == "fixed":
+                        self.intrinsic_spectrum["fixed_wl_emit_Lya"] = wl_Lya / (1.0 - self.intrinsic_spectrum["delta_v_Lya_prior"]["params"][0]/299792.458)
+                    else:
+                        self.params.append("delta_v_Lya")
+                        self.priors.append(self.intrinsic_spectrum["delta_v_Lya_prior"])
+                        self.labels.append(r"Ly$\mathrm{\alpha}$ velocity offset" + '\n')
+                        self.math_labels.append(r"$\Delta v_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
+                if not "fixed_sigma_l_Lya" in self.intrinsic_spectrum and not "fixed_sigma_v_Lya" in self.intrinsic_spectrum:
+                    self.priors.append(self.intrinsic_spectrum["sigma_v_Lya_prior"])
+                    self.params.append("sigma_v_Lya")
+                    self.labels.append(r"Ly$\mathrm{\alpha}$ velocity dispersion" + '\n')
+                    self.math_labels.append(r"$\sigma_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
 
         if self.add_DLA:
             self.params.append("N_HI")
