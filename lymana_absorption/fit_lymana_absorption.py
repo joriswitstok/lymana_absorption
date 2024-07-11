@@ -28,7 +28,7 @@ from .constants import m_H, wl_Lya, E_Lya, Myr_to_seconds
 from .stats import get_mode_hdi
 from .mean_IGM_absorption import igm_absorption
 from .lymana_optical_depth import tau_IGM, tau_DLA
-from .recombination_emissivity import f_recA, f_recB, alpha_A_HII_Draine2011, alpha_B_HII_Draine2011
+from .recombination_emissivity import f_recA, f_recB, alpha_B_HII_Draine2011
 
 def import_yaml():
     import yaml
@@ -85,6 +85,8 @@ class MN_IGM_DLA_solver(Solver):
             # If intrinsic spectrum not provided, parameters to model it should be given
             assert intrinsic_spectrum
             assert "wl0_emit" in intrinsic_spectrum or "wl0_observed" in intrinsic_spectrum
+        else:
+            self.normalise_intr_spec = "spec_norm_prior" in intrinsic_spectrum
 
         # Observed wavelength and flux
         self.wl_obs_list = []
@@ -130,7 +132,7 @@ class MN_IGM_DLA_solver(Solver):
         self.intrinsic_spectrum = intrinsic_spectrum
         self.add_IGM = add_IGM
         self.add_DLA = add_DLA
-        self.add_Lya = self.model_intrinsic_spectrum and self.intrinsic_spectrum.get("add_Lya", False)
+        self.add_Lya = self.intrinsic_spectrum.get("add_Lya", False)
         if convolve is None:
             self.convolve = {}
             for oi, wl_obs in enumerate(self.wl_obs_list):
@@ -147,7 +149,7 @@ class MN_IGM_DLA_solver(Solver):
         
         self.cosmo = None
         self.coupled_R_ion = {}
-        self.fixed_f_esc = None
+        self.fixed_f_esc = 0.0
         if self.add_IGM:
             self.cosmo = self.add_IGM["cosmo"]
             if not isinstance(self.cosmo, FLRW):
@@ -227,7 +229,7 @@ class MN_IGM_DLA_solver(Solver):
                         wl_emit_array = wl_emit_range if self.model_intrinsic_spectrum else self.wl_emit_intrinsic
                         taui = tau_DLA(wl_emit_array=wl_emit_array, N_HI=N_HI, T=self.add_DLA["T_HI"], b_turb=0.0)
                         
-                        theta = [np.mean(self.get_prior_extrema(p)) if p in ["C0", "beta_UV"] else np.nan for p in self.params]
+                        theta = [np.mean(self.get_prior_extrema(p)) if p in ["spec_norm", "beta_UV"] else np.nan for p in self.params]
                         
                         handles[rowi].append(ax.plot(wl_emit_array * (1.0 + z_fid), np.exp(-taui)*self.get_intrinsic_profile(theta, wl_emit_array, z=z_fid),
                                                      linestyle='-.', color=c, alpha=0.8,
@@ -392,7 +394,7 @@ class MN_IGM_DLA_solver(Solver):
                     params.append("F_Lya")
                     if "F_Lya" not in logval_params: logval_params.append("F_Lya")
                     labels.append(r"Intrinsic Ly$\mathrm{\alpha}$ flux" + '\n')
-                    math_labels.append(r"$F_\mathrm{{Ly \alpha}} \, (\mathrm{{erg \, s^{{-1}} \, cm^{{-2}}}})$")
+                    math_labels.append(r"$F_\mathrm{{Ly \alpha, \, intr}} \, (\mathrm{{erg \, s^{{-1}} \, cm^{{-2}}}})$")
                     data = np.append(data, F_Lya_samples.reshape(1, n_samples), axis=0)
                     priors_minmax.append([np.min(F_Lya_samples), np.max(F_Lya_samples)])
                     del F_Lya_samples
@@ -478,12 +480,14 @@ class MN_IGM_DLA_solver(Solver):
                     color = sns.color_palette()[0]
                 corner = import_corner()
                 
-                if exclude_params is not None:
-                    plot_params = [p for p in params if p not in exclude_params]
-                    plot_data = [d for d, p in zip(data, params) if p not in exclude_params]
-                    plot_minmax = [pmm for pmm, p in zip(priors_minmax, params) if p not in exclude_params]
-                    axes_labels = [labels[pi] + math_labels[pi] for pi, p in enumerate(params) if p not in exclude_params]
-                    plot_n_dims = len(plot_params)
+                if exclude_params is None:
+                    exclude_params = []
+                
+                plot_params = [p for p in params if p not in exclude_params]
+                plot_data = [d for d, p in zip(data, params) if p not in exclude_params]
+                plot_minmax = [pmm for pmm, p in zip(priors_minmax, params) if p not in exclude_params]
+                axes_labels = [labels[pi] + math_labels[pi] for pi, p in enumerate(params) if p not in exclude_params]
+                plot_n_dims = len(plot_params)
 
                 if self.verbose:
                     print("Producing {:d}-parameter corner plot...".format(plot_n_dims))
@@ -555,10 +559,7 @@ class MN_IGM_DLA_solver(Solver):
                                                                                                                   *params_vals[param + "_value"], prec=prec)
                     
                     if self.verbose:
-                        print_str = params_labs[param + "_label"].replace('$', '').replace("_{", ' ').replace("^{", ' ')
-                        print_str = print_str.replace('{', '').replace('}', '').replace(r"\mathrm", '').replace(r"\AA", 'Å')
-                        print_str = print_str.replace(r"\left", '').replace(r"\right", '').replace(r"\, ", '').replace(r"\log", "log")
-                        print("Best-fit values of {}:\n{}".format(param, print_str))
+                        print("Best-fit values of {}:\n{}".format(param, params_labs[param + "_label"]))
             del params
 
             if plot_corner:
@@ -575,6 +576,7 @@ class MN_IGM_DLA_solver(Solver):
                     if param in limit_params:
                         axes_c[pi, pi].axvline(x=params_vals[param + "_value"][0], linestyle='--', color="grey", alpha=0.8)
                     else:
+                        modes_mu, hpd_mu = params_hpds.get(param, params_perc[param])
                         if len(modes_mu) == 1:
                             for ax in axes_c[pi:, pi]:
                                 ax.set_xlim(max(plot_minmax[pi][0], params_vals[param + "_value"][0]-5*params_vals[param + "_value"][1]),
@@ -582,6 +584,7 @@ class MN_IGM_DLA_solver(Solver):
                             for ax in axes_c[pi, :pi]:
                                 ax.set_ylim(max(plot_minmax[pi][0], params_vals[param + "_value"][0]-5*params_vals[param + "_value"][1]),
                                             min(plot_minmax[pi][1], params_vals[param + "_value"][0]+5*params_vals[param + "_value"][2]))
+                        
 
                         axes_c[pi, pi].axvline(x=modes_mu[0], color="grey", alpha=0.8)
                         axes_c[pi, pi].axvline(x=hpd_mu[0][0], linestyle='--', color="grey", alpha=0.8)
@@ -655,6 +658,11 @@ class MN_IGM_DLA_solver(Solver):
                 
                 if self.verbose:
                     print("Finished calculations! Analysing profiles...")
+                
+                highres_model_spectrum_perc = np.percentile(profiles["highres_model_spectrum"], [0.5*(100-68.2689), 50, 0.5*(100+68.2689)], axis=0)
+                rdict["highres_model_spectrum_median"] = highres_model_spectrum_perc[1]
+                rdict["highres_model_spectrum_lowerr"], rdict["highres_model_spectrum_uperr"] = np.diff(highres_model_spectrum_perc, axis=0)
+                del profiles["highres_model_spectrum"]
                 
                 for oi, obs_ID, wl_obs_rebin, flux, n_chan in zip(range(self.n_obs), self.obs_IDs, self.wl_obs_rebin_list, self.flux_list, self.n_chan_list):
                     rdict["wl_obs_model{}".format(obs_ID)] = wl_obs_rebin
@@ -764,10 +772,10 @@ class MN_IGM_DLA_solver(Solver):
                     # Compute flux profiles at fixed x_HI = 0.01, 0.1, 1.0; fix redshift and intrinsic spectrum, but record initial values
                     redshift_prior_init = self.redshift_prior.copy()
                     self.redshift_prior = {"type": "fixed", "params": [self.fixed_redshift if self.fixed_redshift else params_vals["redshift_value"][0]]}
-                    if self.model_intrinsic_spectrum:
+                    if self.model_intrinsic_spectrum or self.normalise_intr_spec:
                         intrinsic_spectrum_init = self.intrinsic_spectrum.copy()
-                        if "C0" in self.params:
-                            self.intrinsic_spectrum["fixed_C0"] = params_vals["C0_value"][0]
+                        if "spec_norm" in self.params:
+                            self.intrinsic_spectrum["fixed_spec_norm"] = params_vals["spec_norm_value"][0]
                         if "beta_UV" in self.params:
                             self.intrinsic_spectrum["fixed_beta_UV"] = params_vals["beta_UV_value"][0]
                     
@@ -802,7 +810,7 @@ class MN_IGM_DLA_solver(Solver):
                     
                     # Reset values
                     self.redshift_prior = redshift_prior_init
-                    if self.model_intrinsic_spectrum:
+                    if self.model_intrinsic_spectrum or self.normalise_intr_spec:
                         self.intrinsic_spectrum = intrinsic_spectrum_init
                     self.add_IGM = add_IGM_init
                     self.add_DLA = add_DLA_init
@@ -810,7 +818,7 @@ class MN_IGM_DLA_solver(Solver):
                     self.coupled_R_ion = coupled_R_ion_init
                     self.set_prior()
 
-                np.savez_compressed(IGM_DLA_npz_file, wl_obs_model=self.wl_obs_model,
+                np.savez_compressed(IGM_DLA_npz_file, wl_obs_highres_model=self.wl_obs_model,
                                     grid_file_name=self.add_IGM.get("grid_file_name", None),
                                     **rdict, **params_vals, **params_labs)
                 print("Saved results to {}".format(IGM_DLA_npz_file))
@@ -942,7 +950,7 @@ class MN_IGM_DLA_solver(Solver):
             z = self.z_min
         
         if self.model_intrinsic_spectrum:
-            C0 = (self.intrinsic_spectrum["fixed_C0"] if "fixed_C0" in self.intrinsic_spectrum else self.get_val(theta, "C0", get_maximum=get_maximum)) * (1.0 + z)
+            C0 = (self.intrinsic_spectrum["fixed_spec_norm"] if "fixed_spec_norm" in self.intrinsic_spectrum else self.get_val(theta, "spec_norm", get_maximum=get_maximum)) * (1.0 + z)
             
             if "wl0_observed" in self.intrinsic_spectrum:
                 wl0 = self.intrinsic_spectrum["wl0_observed"] / (1.0 + z)
@@ -959,7 +967,13 @@ class MN_IGM_DLA_solver(Solver):
             
             profile = C0 * (wl_emit_model/wl0)**beta
         else:
-            profile = np.interp(wl_emit_model, self.wl_emit_intrinsic, self.flux_intrinsic)
+            if hasattr(wl_emit_model, "__len__"):
+                profile = spectres(wl_emit_model, self.wl_emit_intrinsic, self.flux_intrinsic)
+            else:
+                profile = np.interp(wl_emit_model, self.wl_emit_intrinsic, self.flux_intrinsic)
+            
+            if self.normalise_intr_spec:
+                profile *= self.intrinsic_spectrum["fixed_spec_norm"] if "fixed_spec_norm" in self.intrinsic_spectrum else self.get_val(theta, "spec_norm", get_maximum=get_maximum)
         
         if frame == "observed":
             # Convert intrinsic flux density between the rest frame, as provided, and the observed frame, in which the
@@ -1111,13 +1125,13 @@ class MN_IGM_DLA_solver(Solver):
         else:
             assert self.coupled_R_ion and "xi_ion" in self.params
             
-            f_rec = {'A': f_recA, 'B': f_recB}[self.coupled_R_ion["case"]]
-            f_esc = self.fixed_f_esc if self.fixed_f_esc else self.get_val(theta, "f_esc", get_minimum=get_maximum)
+            f_rec = {'A': f_recA, 'B': f_recB}[self.coupled_R_ion["case"]](self.coupled_R_ion["T_gas"]) if self.coupled_R_ion else f_recB(1e4)
+            f_esc = self.get_val(theta, "f_esc", get_minimum=get_maximum) if self.fixed_f_esc is None else self.fixed_f_esc
 
             F_ion = self.get_ion_strength(theta, z=z, luminosity=luminosity, get_maximum=get_maximum)
             
             # Convert ionising photon production rate to Lyα luminosity
-            F_Lya = F_ion * (f_rec(self.coupled_R_ion["T_gas"]) * E_Lya) * (1.0 - f_esc)
+            F_Lya = F_ion * (f_rec * E_Lya) * (1.0 - f_esc)
 
         return F_Lya
 
@@ -1130,14 +1144,12 @@ class MN_IGM_DLA_solver(Solver):
             L_Lya = self.get_Lya_strength(theta, z=z, luminosity=luminosity, get_maximum=get_maximum)
 
             # Convert Lyα luminosity (flux) to an ionising photon rate (flux)
-            f_rec = {'A': f_recA, 'B': f_recB}[self.coupled_R_ion["case"]]
-            f_esc = self.fixed_f_esc if self.fixed_f_esc else self.get_val(theta, "f_esc", get_maximum=get_maximum)
-            F_ion = L_Lya / (f_rec(self.coupled_R_ion["T_gas"]) * E_Lya) / (1.0 - f_esc)
+            f_rec = {'A': f_recA, 'B': f_recB}[self.coupled_R_ion["case"]](self.coupled_R_ion["T_gas"]) if self.coupled_R_ion else f_recB(1e4)
+            f_esc = self.get_val(theta, "f_esc", get_minimum=get_maximum) if self.fixed_f_esc is None else self.fixed_f_esc
+            if get_maximum: f_esc = min(0.9, f_esc)
+            F_ion = L_Lya / (f_rec * E_Lya) / (1.0 - f_esc)
         else:
             assert self.coupled_R_ion and "xi_ion" in self.params
-            
-            f_rec = {'A': f_recA, 'B': f_recB}[self.coupled_R_ion["case"]]
-            f_esc = self.fixed_f_esc if self.fixed_f_esc else self.get_val(theta, "f_esc", get_minimum=get_maximum)
         
             # Convert intrinsic flux at 1500 Å to ionising photon rate (flux)
             F_nu_UV = self.get_intrinsic_profile(theta, 1500.0, frame="intrinsic", units="L_nu" if luminosity else "F_nu",
@@ -1162,9 +1174,9 @@ class MN_IGM_DLA_solver(Solver):
         if get_maximum:
             full_integration = False
             z = self.z_min
-            f_esc = self.fixed_f_esc if self.fixed_f_esc else 1.0
+            f_esc = 1.0 if self.fixed_f_esc is None else self.fixed_f_esc
         else:
-            f_esc = self.fixed_f_esc if self.fixed_f_esc else self.get_val(theta, "f_esc")
+            f_esc = self.get_val(theta, "f_esc") if self.fixed_f_esc is None else self.fixed_f_esc
 
         if full_integration:
             # Solve ODE to get ionised bubble size in Mpc
@@ -1253,6 +1265,9 @@ class MN_IGM_DLA_solver(Solver):
             if return_profile in ["igm_transmission", "all"]:
                 profiles["igm_transmission"] = igm_transmission
         
+        if return_profile in ["model_spectrum", "all"]:
+            profiles["highres_model_spectrum"] = model_spectrum
+        
         if return_profile in ["model_spectrum", "observed_spectrum", "all"]:
             for oi, wl_obs, wl_obs_rebin in zip(range(self.n_obs), self.wl_obs_list, self.wl_obs_rebin_list):
                 # Rebin to model wavelength array for this resolution
@@ -1324,12 +1339,12 @@ class MN_IGM_DLA_solver(Solver):
             self.priors.append(self.redshift_prior)
             self.z_min, self.z_max = self.get_prior_extrema("redshift")
             self.labels.append("Redshift ")
-            self.math_labels.append(r"$z$")
+            self.math_labels.append(r"$z_\mathrm{sys}$")
 
         if self.model_intrinsic_spectrum:
-            if not "fixed_C0" in self.intrinsic_spectrum:
-                self.params.append("C0")
-                self.priors.append(self.intrinsic_spectrum["C0_prior"])
+            if not "fixed_spec_norm" in self.intrinsic_spectrum:
+                self.params.append("spec_norm")
+                self.priors.append(self.intrinsic_spectrum["spec_norm_prior"])
                 self.labels.append("Cont. normalisation\n")
                 self.math_labels.append(r"$C \, (10^{{{:d}}} \, \mathrm{{erg \, s^{{-1}} \, cm^{{-2}} \, \AA^{{-1}}}})$".format(int(-np.log10(self.conv))))
             if not "fixed_beta_UV" in self.intrinsic_spectrum:
@@ -1337,25 +1352,32 @@ class MN_IGM_DLA_solver(Solver):
                 self.priors.append(self.intrinsic_spectrum["beta_UV_prior"])
                 self.labels.append("UV slope ")
                 self.math_labels.append(r"$\beta_\mathrm{{UV}}$")
-            if self.add_Lya:
-                self.params.append("F_Lya")
-                self.priors.append(self.intrinsic_spectrum["F_Lya_prior"])
-                self.labels.append(r"Intrinsic Ly$\mathrm{\alpha}$ flux" + '\n')
-                self.math_labels.append(r"$F_\mathrm{{Ly \alpha}} \, (\mathrm{{erg \, s^{{-1}} \, cm^{{-2}}}})$")
-                if not "fixed_wl_emit_Lya" in self.intrinsic_spectrum and not "fixed_wl_obs_Lya" in self.intrinsic_spectrum:
-                    assert "delta_v_Lya_prior" in self.intrinsic_spectrum
-                    if self.intrinsic_spectrum["delta_v_Lya_prior"]["type"] == "fixed":
-                        self.intrinsic_spectrum["fixed_wl_emit_Lya"] = wl_Lya / (1.0 - self.intrinsic_spectrum["delta_v_Lya_prior"]["params"][0]/299792.458)
-                    else:
-                        self.params.append("delta_v_Lya")
-                        self.priors.append(self.intrinsic_spectrum["delta_v_Lya_prior"])
-                        self.labels.append(r"Ly$\mathrm{\alpha}$ velocity offset" + '\n')
-                        self.math_labels.append(r"$\Delta v_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
-                if not "fixed_sigma_l_Lya" in self.intrinsic_spectrum and not "fixed_sigma_v_Lya" in self.intrinsic_spectrum:
-                    self.priors.append(self.intrinsic_spectrum["sigma_v_Lya_prior"])
-                    self.params.append("sigma_v_Lya")
-                    self.labels.append(r"Ly$\mathrm{\alpha}$ velocity dispersion" + '\n')
-                    self.math_labels.append(r"$\sigma_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
+        else:
+            if self.normalise_intr_spec:
+                self.params.append("spec_norm")
+                self.priors.append(self.intrinsic_spectrum["spec_norm_prior"])
+                self.labels.append("Cont. norm. ")
+                self.math_labels.append(r"$C$")
+        
+        if self.add_Lya:
+            self.params.append("F_Lya")
+            self.priors.append(self.intrinsic_spectrum["F_Lya_prior"])
+            self.labels.append(r"Intrinsic Ly$\mathrm{\alpha}$ flux" + '\n')
+            self.math_labels.append(r"$F_\mathrm{{Ly \alpha, \, intr}} \, (\mathrm{{erg \, s^{{-1}} \, cm^{{-2}}}})$")
+            if not "fixed_wl_emit_Lya" in self.intrinsic_spectrum and not "fixed_wl_obs_Lya" in self.intrinsic_spectrum:
+                assert "delta_v_Lya_prior" in self.intrinsic_spectrum
+                if self.intrinsic_spectrum["delta_v_Lya_prior"]["type"] == "fixed":
+                    self.intrinsic_spectrum["fixed_wl_emit_Lya"] = wl_Lya / (1.0 - self.intrinsic_spectrum["delta_v_Lya_prior"]["params"][0]/299792.458)
+                else:
+                    self.params.append("delta_v_Lya")
+                    self.priors.append(self.intrinsic_spectrum["delta_v_Lya_prior"])
+                    self.labels.append(r"Ly$\mathrm{\alpha}$ velocity offset" + '\n')
+                    self.math_labels.append(r"$\Delta v_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
+            if not "fixed_sigma_l_Lya" in self.intrinsic_spectrum and not "fixed_sigma_v_Lya" in self.intrinsic_spectrum:
+                self.priors.append(self.intrinsic_spectrum["sigma_v_Lya_prior"])
+                self.params.append("sigma_v_Lya")
+                self.labels.append(r"Ly$\mathrm{\alpha}$ velocity dispersion" + '\n')
+                self.math_labels.append(r"$\sigma_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
 
         if self.add_DLA:
             self.params.append("N_HI")
@@ -1375,7 +1397,7 @@ class MN_IGM_DLA_solver(Solver):
         if self.add_IGM:
             if self.add_IGM["vary_R_ion"]:
                 if self.coupled_R_ion:
-                    if not self.fixed_f_esc:
+                    if self.fixed_f_esc is None:
                         # Instead of varying F_Lya, vary the ionising photon production efficiency
                         F_Lya_idx = self.params.index("F_Lya")
                         del self.params[F_Lya_idx], self.priors[F_Lya_idx], self.labels[F_Lya_idx], self.math_labels[F_Lya_idx]
@@ -1401,7 +1423,7 @@ class MN_IGM_DLA_solver(Solver):
                 self.math_labels.append(r"$\bar{{x}}_\mathrm{{HI}}$")
         
         # Sort parameters according to predetermined order
-        self.all_params = ["redshift", "N_HI", "redshift_DLA", "b_turb", "C0", "beta_UV",
+        self.all_params = ["redshift", "N_HI", "redshift_DLA", "b_turb", "spec_norm", "beta_UV",
                             "x_HI_global", "R_ion", "xi_ion", "f_esc", "F_Lya", "delta_v_Lya", "sigma_v_Lya"]
         sort_indices = [self.params.index(p) for p in sorted(self.params, key=lambda p: self.all_params.index(p))]
         self.params = [self.params[idx] for idx in sort_indices]

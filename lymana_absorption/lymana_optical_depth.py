@@ -32,7 +32,7 @@ def Doppler_x(wl_emit, T, b_turb=0.0):
     
     """
 
-    # Use the wavelength definition (see Lee 2013 for the distinction)
+    # Use the frequency definition (see Webb, Lee 2021)
     nu = 1e10 * c / wl_emit # frequency in Hz
     x = (nu - nu_Lya) / deltanu_D(T, b_turb=b_turb)
     
@@ -66,16 +66,16 @@ def Voigt(x, T, b_turb, approximation="Tasitsiomi2006"):
     
     return phi
 
-def correction_Lee2013(nu):
+def correction_BL2015(x):
     """
     
-    Correction to scattering cross section based on full quantum-mechanical treatment (from Lee 2013), given frequencies `nu` in Hz
+    Correction to scattering cross section based on quantum-mechanical treatment (from Bach & Lee 2015), given frequencies `nu` in Hz
     
     
     """
 
-    # Correct cross-section profile (see equation (18) in Dijkstra 2014)
-    return (1.0 - 1.792 * (nu - nu_Lya) / nu_Lya)
+    # Correct cross-section profile
+    return (1.0 + 0.376 * (1.0 - np.exp(7.666*x)) - 1.922 * x - 1.036 * x**2)
 
 def sigma_alpha(x, T, b_turb=0.0, approximation="Tasitsiomi2006", quantum_correction=True):
     """
@@ -90,7 +90,7 @@ def sigma_alpha(x, T, b_turb=0.0, approximation="Tasitsiomi2006", quantum_correc
     
     if quantum_correction:
         # Work out the frequency given the Doppler parameter x and deltanu_D
-        sigma_alpha *= correction_Lee2013(nu=nu_Lya + x * deltanu_D(T, b_turb=b_turb))
+        sigma_alpha *= correction_BL2015(x * deltanu_D(T, b_turb=b_turb) / nu_Lya)
     
     return sigma_alpha
 
