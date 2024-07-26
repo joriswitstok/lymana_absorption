@@ -408,7 +408,12 @@ class MN_IGM_DLA_solver(Solver):
                 if self.mpi_rank == 0 and self.verbose:
                     print("Solving for ionised bubble sizes in {:d} samples...".format(n_samples))
                 
-                R_ion_samples = self.mpi_calculate(self.get_coupled_R_ion)
+                R_ion_results = self.mpi_calculate(self.get_coupled_R_ion, full_evolution=True)
+                if self.mpi_rank == 0:
+                    R_ion_time = R_ion_results['t'][0]
+                    R_ion_samples = R_ion_results["R_ion(t)"][:, -1]
+                    R_ion_evol_perc = np.percentile(R_ion_results["R_ion(t)"], [0.5*(100-68.2689), 50, 0.5*(100+68.2689)], axis=0)
+                del R_ion_results
                 
                 if self.mpi_rank == 0:
                     params.append("R_ion")
@@ -466,8 +471,8 @@ class MN_IGM_DLA_solver(Solver):
         self.mpi_synchronise(self.mpi_comm)
 
         if self.mpi_rank != 0:
-            params_vals = None
-            params_labs = None
+            param_vals = None
+            param_labs = None
         else:
             if plot_corner:
                 if lann_params is None:
@@ -537,35 +542,74 @@ class MN_IGM_DLA_solver(Solver):
                     axes_c[ri, 0].set_ylabel(axes_labels[ri], fontsize=axeslabelsize)
                     for ax in axes_c[ri, :ri]:
                         ax.set_ylim(plot_minmax[ri])
-            
+                
+                if self.add_Lya:
+                    if self.coupled_R_ion:
+                        if self.mpi_rank == 0 and self.verbose:
+                            print("Plotting ionised bubble size evolution...")
+                        
+                        ax_ion = fig.add_subplot(axes_c[0, 0].get_gridspec()[:plot_n_dims//3, -plot_n_dims//2:])
+                        ax_ion.tick_params(axis="both", which="both", direction="in", labelsize=axeslabelsize)
+                        ax_ion.axvline(x=0, linestyle='--', color='k', alpha=0.8)
+                        
+                        ax_ion.plot(R_ion_time, R_ion_evol_perc[1], color=color, alpha=0.8)
+                        ax_ion.fill_between(R_ion_time, y1=R_ion_evol_perc[0], y2=R_ion_evol_perc[2],
+                                            edgecolor="None", facecolor=color, alpha=0.2)
+                        
+                        # Mean hydrogen number density (in 1/Mpc^3) at redshift z, case-B recombination rate
+                        z = self.fixed_redshift if self.fixed_redshift else (param_limits["redshift"] if "redshift" in limit_params else params_hpds.get("redshift", params_perc[param])[0][0])
+                        n_H_bar = (self.coupled_R_ion["f_H"] * self.cosmo.critical_density(0) * self.cosmo.Ob(0) / (m_H * units.kg)).to("1/Mpc^3").value * (1.0 + z)**3
+                        alpha_B = (alpha_B_HII_Draine2011(self.coupled_R_ion["T_gas"]) * (units.cm**3/units.s)).to("Mpc^3/Myr").value # from cm^3/s to Mpc^3/Myr
+                        
+                        handles = []
+                        t_arr = np.linspace(0, self.coupled_R_ion["age_Myr"]/3, 100)
+                        handles.append(ax_ion.plot(-t_arr, R_ion_evol_perc[1][-1]*np.exp(self.cosmo.H(z).to("1/Myr").value*t_arr),
+                                                   linestyle='--', color=color, alpha=0.8, label="Hubble expansion")[0])
+                        
+                        ax_HI = ax_ion.twinx()
+                        ax_HI.tick_params(axis="both", which="both", direction="in", labelsize=axeslabelsize)
+                        handles.append(ax_HI.plot(-t_arr, 1.0-np.exp(-self.coupled_R_ion["C_HII"]*n_H_bar*alpha_B*t_arr),
+                                                  linestyle=':', color='k', alpha=0.8, label=r"$x_\mathrm{HI}$ evolution")[0])
+
+                        ax_ion.set_xlim(-self.coupled_R_ion["age_Myr"]/5, 1.1*self.coupled_R_ion["age_Myr"])
+                        ax_ion.set_ylim(bottom=0)
+                        
+                        ax_HI.set_yscale("log")
+                        
+                        ax_ion.set_xlabel(r"Lookback time $t \, (\mathrm{Myr})$", fontsize=axeslabelsize)
+                        ax_ion.set_ylabel(r"Ionised bubble radius $R_\mathrm{ion} \, (\mathrm{pMpc})$", fontsize=axeslabelsize)
+                        ax_HI.set_ylabel(r"Residual neutral hydrogen fraction $x_\mathrm{HI}$", fontsize=axeslabelsize)
+
+                        ax_ion.legend(handles=handles, loc="upper right", fontsize=axeslabelsize)
+
             del data, labels, priors_minmax
             if self.verbose:
                 print("Obtaining (labels for) best-fit values...\n")
 
-            params_vals = {}
-            params_labs = {}
+            param_vals = {}
+            param_labs = {}
             for pi, param in enumerate(params):
                 if param in limit_params:
-                    params_vals[param + "_value"] = [param_limits[param], np.nan, np.nan]
-                    prec = max(0, 2-math.floor(np.log10(params_vals[param + "_value"][0])))
-                    params_labs[param + "_label"] = r"{} {} {:.{prec}f}$".format(math_labels[pi][:-1], '>' if limit_params[param] < 0.5 else '<',
-                                                                                 *params_vals[param + "_value"], prec=prec)
+                    param_vals[param + "_value"] = [param_limits[param], np.nan, np.nan]
+                    prec = max(0, 2-math.floor(np.log10(param_vals[param + "_value"][0])))
+                    param_labs[param + "_label"] = r"{} {} {:.{prec}f}$".format(math_labels[pi][:-1], '>' if limit_params[param] < 0.5 else '<',
+                                                                                 *param_vals[param + "_value"], prec=prec)
                 else:
                     modes_mu, hpd_mu = params_hpds.get(param, params_perc[param])
                     
-                    params_vals[param + "_value"] = modes_mu[0], modes_mu[0]-hpd_mu[0][0], hpd_mu[0][1]-modes_mu[0]
-                    prec = max(0, 1-math.floor(np.log10(min(params_vals[param + "_value"][1:])))) if min(params_vals[param + "_value"][1:]) > 0 else 0
-                    params_labs[param + "_label"] = r"{} = {:.{prec}f}_{{-{:.{prec}f}}}^{{+{:.{prec}f}}}$".format(math_labels[pi][:-1],
-                                                                                                                  *params_vals[param + "_value"], prec=prec)
+                    param_vals[param + "_value"] = modes_mu[0], modes_mu[0]-hpd_mu[0][0], hpd_mu[0][1]-modes_mu[0]
+                    prec = max(0, 1-math.floor(np.log10(min(param_vals[param + "_value"][1:])))) if min(param_vals[param + "_value"][1:]) > 0 else 0
+                    param_labs[param + "_label"] = r"{} = {:.{prec}f}_{{-{:.{prec}f}}}^{{+{:.{prec}f}}}$".format(math_labels[pi][:-1],
+                                                                                                                  *param_vals[param + "_value"], prec=prec)
                     
                     if self.verbose:
-                        print("Best-fit values of {}:\n{}".format(param, params_labs[param + "_label"]))
+                        print("Best-fit values of {}:\n{}".format(param, param_labs[param + "_label"]))
             del params
 
             if plot_corner:
                 for pi, param in enumerate(plot_params):
                     ha = "left" if param in lann_params else "center"
-                    axes_c[pi, pi].annotate(text=params_labs[param + "_label"],
+                    axes_c[pi, pi].annotate(text=param_labs[param + "_label"],
                                             xy=(0 if ha == "left" else 0.5, 1), xytext=(4 if ha == "left" else 0, 4),
                                             xycoords="axes fraction", textcoords="offset points",
                                             va="bottom", ha="left" if ha == "left" else "center",
@@ -574,16 +618,16 @@ class MN_IGM_DLA_solver(Solver):
                         axes_c[pi, pi].axvline(x=self.fixed_redshift, linestyle=':', color='k', alpha=0.8)
                     
                     if param in limit_params:
-                        axes_c[pi, pi].axvline(x=params_vals[param + "_value"][0], linestyle='--', color="grey", alpha=0.8)
+                        axes_c[pi, pi].axvline(x=param_vals[param + "_value"][0], linestyle='--', color="grey", alpha=0.8)
                     else:
                         modes_mu, hpd_mu = params_hpds.get(param, params_perc[param])
                         if len(modes_mu) == 1:
                             for ax in axes_c[pi:, pi]:
-                                ax.set_xlim(max(plot_minmax[pi][0], params_vals[param + "_value"][0]-5*params_vals[param + "_value"][1]),
-                                            min(plot_minmax[pi][1], params_vals[param + "_value"][0]+5*params_vals[param + "_value"][2]))
+                                ax.set_xlim(max(plot_minmax[pi][0], param_vals[param + "_value"][0]-5*param_vals[param + "_value"][1]),
+                                            min(plot_minmax[pi][1], param_vals[param + "_value"][0]+5*param_vals[param + "_value"][2]))
                             for ax in axes_c[pi, :pi]:
-                                ax.set_ylim(max(plot_minmax[pi][0], params_vals[param + "_value"][0]-5*params_vals[param + "_value"][1]),
-                                            min(plot_minmax[pi][1], params_vals[param + "_value"][0]+5*params_vals[param + "_value"][2]))
+                                ax.set_ylim(max(plot_minmax[pi][0], param_vals[param + "_value"][0]-5*param_vals[param + "_value"][1]),
+                                            min(plot_minmax[pi][1], param_vals[param + "_value"][0]+5*param_vals[param + "_value"][2]))
                         
 
                         axes_c[pi, pi].axvline(x=modes_mu[0], color="grey", alpha=0.8)
@@ -602,7 +646,7 @@ class MN_IGM_DLA_solver(Solver):
                             axes_c[ri, ci].axhline(y=self.fixed_redshift, linestyle=':', color='k', alpha=0.8)
                         
                         if plot_params[ri] in limit_params:
-                            axes_c[ri, ci].axvline(x=params_vals[plot_params[ri] + "_value"][0], linestyle='--', color="grey", alpha=0.8)
+                            axes_c[ri, ci].axvline(x=param_vals[plot_params[ri] + "_value"][0], linestyle='--', color="grey", alpha=0.8)
                         else:
                             modes_rmu, hpd_rmu = params_hpds.get(plot_params[ri], params_perc[plot_params[ri]])
                             
@@ -611,7 +655,7 @@ class MN_IGM_DLA_solver(Solver):
                             axes_c[ri, ci].axhline(y=hpd_rmu[0][1], linestyle='--', color="grey", alpha=0.8)
                         
                         if plot_params[ci] in limit_params:
-                            axes_c[ri, ci].axvline(x=params_vals[plot_params[ci] + "_value"][0], linestyle='--', color="grey", alpha=0.8)
+                            axes_c[ri, ci].axvline(x=param_vals[plot_params[ci] + "_value"][0], linestyle='--', color="grey", alpha=0.8)
                         else:
                             modes_cmu, hpd_cmu = params_hpds.get(plot_params[ci], params_perc[plot_params[ci]])
                             
@@ -637,8 +681,8 @@ class MN_IGM_DLA_solver(Solver):
         
         self.mpi_synchronise(self.mpi_comm)
         if self.mpi_run:
-            params_vals = self.mpi_comm.bcast(params_vals, root=0)
-            params_labs = self.mpi_comm.bcast(params_labs, root=0)
+            param_vals = self.mpi_comm.bcast(param_vals, root=0)
+            param_labs = self.mpi_comm.bcast(param_labs, root=0)
         self.mpi_synchronise(self.mpi_comm)
 
         rdict = {}
@@ -771,13 +815,13 @@ class MN_IGM_DLA_solver(Solver):
                     
                     # Compute flux profiles at fixed x_HI = 0.01, 0.1, 1.0; fix redshift and intrinsic spectrum, but record initial values
                     redshift_prior_init = self.redshift_prior.copy()
-                    self.redshift_prior = {"type": "fixed", "params": [self.fixed_redshift if self.fixed_redshift else params_vals["redshift_value"][0]]}
+                    self.redshift_prior = {"type": "fixed", "params": [self.fixed_redshift if self.fixed_redshift else param_vals["redshift_value"][0]]}
                     if self.model_intrinsic_spectrum or self.normalise_intr_spec:
                         intrinsic_spectrum_init = self.intrinsic_spectrum.copy()
                         if "spec_norm" in self.params:
-                            self.intrinsic_spectrum["fixed_spec_norm"] = params_vals["spec_norm_value"][0]
+                            self.intrinsic_spectrum["fixed_spec_norm"] = param_vals["spec_norm_value"][0]
                         if "beta_UV" in self.params:
-                            self.intrinsic_spectrum["fixed_beta_UV"] = params_vals["beta_UV_value"][0]
+                            self.intrinsic_spectrum["fixed_beta_UV"] = param_vals["beta_UV_value"][0]
                     
                     # Reset IGM properties, but record initial values
                     add_IGM_init = self.add_IGM.copy()
@@ -820,7 +864,7 @@ class MN_IGM_DLA_solver(Solver):
 
                 np.savez_compressed(IGM_DLA_npz_file, wl_obs_highres_model=self.wl_obs_model,
                                     grid_file_name=self.add_IGM.get("grid_file_name", None),
-                                    **rdict, **params_vals, **params_labs)
+                                    **rdict, **param_vals, **param_labs)
                 print("Saved results to {}".format(IGM_DLA_npz_file))
         
         self.mpi_synchronise(self.mpi_comm)
@@ -831,7 +875,7 @@ class MN_IGM_DLA_solver(Solver):
         if self.mpi_rank == 0 and self.verbose:
             print("Finished evaluating posterior distributions!")
         
-        return (rdict, params_vals, params_labs)
+        return (rdict, param_vals, param_labs)
     
     def set_wl_arrays(self):
         self.n_res = self.convolve.get("n_res", 10.0)
@@ -1051,7 +1095,7 @@ class MN_IGM_DLA_solver(Solver):
             else:
                 if self.mpi_rank == 0 and verbose:
                     print("IGM damping-wing transmission curves will be calculated (but not saved afterwards)...")
-            
+
             if self.mpi_run:
                 calc_curves = self.mpi_comm.bcast(calc_curves, root=0)
             
@@ -1125,7 +1169,7 @@ class MN_IGM_DLA_solver(Solver):
         else:
             assert self.coupled_R_ion and "xi_ion" in self.params
             
-            f_rec = {'A': f_recA, 'B': f_recB}[self.coupled_R_ion["case"]](self.coupled_R_ion["T_gas"]) if self.coupled_R_ion else f_recB(1e4)
+            f_rec = {'A': f_recA, 'B': f_recB}[self.coupled_R_ion["case"]](self.coupled_R_ion["T_gas"]) if self.coupled_R_ion else f_recB(2e4)
             f_esc = self.get_val(theta, "f_esc", get_minimum=get_maximum) if self.fixed_f_esc is None else self.fixed_f_esc
 
             F_ion = self.get_ion_strength(theta, z=z, luminosity=luminosity, get_maximum=get_maximum)
@@ -1144,7 +1188,7 @@ class MN_IGM_DLA_solver(Solver):
             L_Lya = self.get_Lya_strength(theta, z=z, luminosity=luminosity, get_maximum=get_maximum)
 
             # Convert Lyα luminosity (flux) to an ionising photon rate (flux)
-            f_rec = {'A': f_recA, 'B': f_recB}[self.coupled_R_ion["case"]](self.coupled_R_ion["T_gas"]) if self.coupled_R_ion else f_recB(1e4)
+            f_rec = {'A': f_recA, 'B': f_recB}[self.coupled_R_ion["case"]](self.coupled_R_ion["T_gas"]) if self.coupled_R_ion else f_recB(2e4)
             f_esc = self.get_val(theta, "f_esc", get_minimum=get_maximum) if self.fixed_f_esc is None else self.fixed_f_esc
             if get_maximum: f_esc = min(0.9, f_esc)
             F_ion = L_Lya / (f_rec * E_Lya) / (1.0 - f_esc)
@@ -1158,7 +1202,7 @@ class MN_IGM_DLA_solver(Solver):
 
         return F_ion
 
-    def get_coupled_R_ion(self, theta, full_integration=None, z=None, get_maximum=False):
+    def get_coupled_R_ion(self, theta, full_evolution=False, full_integration=None, z=None, get_maximum=False):
         if z is None and not get_maximum:
             z = self.fixed_redshift if self.fixed_redshift else self.get_val(theta, "redshift")
         
@@ -1178,6 +1222,13 @@ class MN_IGM_DLA_solver(Solver):
         else:
             f_esc = self.get_val(theta, "f_esc") if self.fixed_f_esc is None else self.fixed_f_esc
 
+        results = {}
+        if full_evolution:
+            t_eval = np.insert(np.geomspace(age_Myr/1e4, age_Myr, 99), 0, 0.0)
+            results['t'] = age_Myr - t_eval
+        else:
+            t_eval = np.array([age_Myr])
+            
         if full_integration:
             # Solve ODE to get ionised bubble size in Mpc
             def dRdt(t, R_ion3):
@@ -1195,15 +1246,21 @@ class MN_IGM_DLA_solver(Solver):
                 Hubble_rec = (3.0 * self.cosmo.H(z_t).to("1/Myr").value - self.coupled_R_ion["C_HII"] * n_H_bar * alpha_B) * R_ion3
                 ion = 3.0 * f_esc * dN_ion_dt_Myr / (4.0 * np.pi * n_H_bar)
                 return Hubble_rec + ion
-            
-            R_ion3 = solve_ivp(fun=dRdt, t_span=(0.0, age_Myr), y0=[0.0], t_eval=[age_Myr],
-                                dense_output=True, vectorized=True, method="RK45").y[0, 0]
+
+            sol = solve_ivp(fun=dRdt, t_span=(0.0, age_Myr), y0=[0.0], t_eval=t_eval,
+                            dense_output=True, vectorized=True, method="RK45")
+            if full_evolution:
+                assert np.allclose(t_eval, sol.t)
+            results["R_ion(t)"] = sol.y[0]**(1.0/3.0)
         else:
             # Neglect Hubble flow and recombinations in Eq. (3) of Cen & Haiman (2000) to get ionised bubble size in Mpc
             n_H_bar = n_H_0 * (1.0 + z)**3
-            R_ion3 = 3.0 * f_esc * dN_ion_dt_Myr * age_Myr / (4.0 * np.pi * n_H_bar)
+            results["R_ion(t)"] = (3.0 * f_esc * dN_ion_dt_Myr * t_eval / (4.0 * np.pi * n_H_bar))**(1.0/3.0)
         
-        return R_ion3**(1.0/3.0)
+        if full_evolution:
+            return results
+        else:
+            return results["R_ion(t)"][-1]
 
     def get_igm_transmission(self, theta, wl_obs_model=None, z=None):
         if wl_obs_model is None:
