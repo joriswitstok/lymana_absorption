@@ -351,7 +351,7 @@ class MN_IGM_DLA_solver(Solver):
             return func_samples_dict["main"]
 
     def analyse_posterior(self, hdi_params=None, limit_params=None, plot_limits=None, exclude_params=None,
-                          lann_params=None, logval_params=["N_HI", "F_Lya", "xi_ion"],
+                          lann_params=None, logval_params=["N_HI", "F_Lya", "xi_ion"], optional_params=["R_ion", "F_Lya"],
                           plot_corner=True, fig=None, figsize=None, figname=None, showfig=False,
                           color=None, axeslabelsize=None, annlabelsize=None,
                           IGM_DLA_npz_file=None, x_HI_values=[0.0, 0.01, 0.1, 1.0]):
@@ -368,9 +368,9 @@ class MN_IGM_DLA_solver(Solver):
             data = self.samples.copy().transpose()
             priors_minmax = [self.get_prior_extrema(param) for param in params]
             
-            if self.add_Lya:
+            if self.add_Lya and "F_Lya" in optional_params:
                 if "F_Lya" in self.params:
-                    if self.mpi_rank == 0 and self.verbose:
+                    if self.verbose:
                         print("Calculating ionising photon production efficiencies...")
                     # Convert observed flux (in erg/s/cm^2/Å) at 1500 Å to erg/s/cm^2/Hz (skip conversion to specific luminosity in erg/s/Hz)
                     F_nu_UV_samples = self.get_intrinsic_profile(data, 1500.0, frame="intrinsic", units="F_nu")
@@ -379,13 +379,13 @@ class MN_IGM_DLA_solver(Solver):
                     
                     params.append("xi_ion")
                     if "xi_ion" not in logval_params: logval_params.append("xi_ion")
-                    labels.append("Ion. photon prod. eff.\n")
+                    labels.append("Ion. phot. prod. eff.\n")
                     math_labels.append(r"$\xi_\mathrm{{ion}} \, (\mathrm{{Hz \, erg^{{-1}}}})$")
                     data = np.append(data, xi_ion_samples.reshape(1, n_samples), axis=0)
                     priors_minmax.append([np.min(xi_ion_samples), np.max(xi_ion_samples)])
                     del xi_ion_samples
                 else:
-                    if self.mpi_rank == 0 and self.verbose:
+                    if self.verbose:
                         print("Calculating observed Lyα fluxes...")
                     assert self.coupled_R_ion and "xi_ion" in self.params
                     # Observed Lyα flux in erg/s/cm^2
@@ -417,7 +417,7 @@ class MN_IGM_DLA_solver(Solver):
                 
                 if self.mpi_rank == 0:
                     params.append("R_ion")
-                    labels.append("Ionised bubble radius\n")
+                    labels.append("Ion. bubble radius\n")
                     math_labels.append(r"$R_\mathrm{{ion}} \, (\mathrm{{pMpc}})$")
                     data = np.append(data, R_ion_samples.reshape(1, n_samples), axis=0)
                     priors_minmax.append((np.nanmin(R_ion_samples), np.nanmax(R_ion_samples)))
@@ -548,7 +548,7 @@ class MN_IGM_DLA_solver(Solver):
                         if self.mpi_rank == 0 and self.verbose:
                             print("Plotting ionised bubble size evolution...")
                         
-                        ax_ion = fig.add_subplot(axes_c[0, 0].get_gridspec()[:plot_n_dims//3, -plot_n_dims//2:])
+                        ax_ion = fig.add_subplot([0.55, 0.675, 0.4, 0.3])
                         ax_ion.tick_params(axis="both", which="both", direction="in", labelsize=axeslabelsize)
                         ax_ion.axvline(x=0, linestyle='--', color='k', alpha=0.8)
                         
@@ -1428,12 +1428,12 @@ class MN_IGM_DLA_solver(Solver):
                 else:
                     self.params.append("delta_v_Lya")
                     self.priors.append(self.intrinsic_spectrum["delta_v_Lya_prior"])
-                    self.labels.append(r"Ly$\mathrm{\alpha}$ velocity offset" + '\n')
+                    self.labels.append(r"Ly$\mathrm{\alpha}$ vel. offset" + '\n')
                     self.math_labels.append(r"$\Delta v_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
             if not "fixed_sigma_l_Lya" in self.intrinsic_spectrum and not "fixed_sigma_v_Lya" in self.intrinsic_spectrum:
                 self.priors.append(self.intrinsic_spectrum["sigma_v_Lya_prior"])
                 self.params.append("sigma_v_Lya")
-                self.labels.append(r"Ly$\mathrm{\alpha}$ velocity dispersion" + '\n')
+                self.labels.append(r"Ly$\mathrm{\alpha}$ vel. dispersion" + '\n')
                 self.math_labels.append(r"$\sigma_\mathrm{{Ly \alpha}} \, (\mathrm{{km \, s^{{-1}}}})$")
 
         if self.add_DLA:
@@ -1461,7 +1461,7 @@ class MN_IGM_DLA_solver(Solver):
                         
                         self.params.append("xi_ion")
                         self.priors.append(self.coupled_R_ion["xi_ion_prior"])
-                        self.labels.append("Ion. photon prod. eff.\n")
+                        self.labels.append("Ion. phot. prod. eff.\n")
                         self.math_labels.append(r"$\xi_\mathrm{{ion}} \, (\mathrm{{Hz \, erg^{{-1}}}})$")
 
                         self.params.append("f_esc")
@@ -1471,7 +1471,7 @@ class MN_IGM_DLA_solver(Solver):
                 else:
                     self.params.append("R_ion")
                     self.priors.append(self.add_IGM["R_ion_prior"])
-                    self.labels.append("Ionised bubble radius\n")
+                    self.labels.append("Ion. bubble radius\n")
                     self.math_labels.append(r"$R_\mathrm{{ion}} \, (\mathrm{{pMpc}})$")
             if self.add_IGM["vary_x_HI_global"]:
                 self.params.append("x_HI_global")
