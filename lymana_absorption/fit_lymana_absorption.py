@@ -351,7 +351,7 @@ class MN_IGM_DLA_solver(Solver):
             return func_samples_dict["main"]
 
     def analyse_posterior(self, hdi_params=None, limit_params=None, plot_limits=None, exclude_params=None,
-                          lann_params=None, logval_params=["N_HI", "F_Lya", "xi_ion"], optional_params=["R_ion", "F_Lya"],
+                          lann_params=None, lpad_params=None, logval_params=["N_HI", "L_Lya", "xi_ion"],
                           plot_corner=True, fig=None, figsize=None, figname=None, showfig=False,
                           color=None, axeslabelsize=None, annlabelsize=None,
                           IGM_DLA_npz_file=None, x_HI_values=[0.0, 0.01, 0.1, 1.0]):
@@ -368,7 +368,7 @@ class MN_IGM_DLA_solver(Solver):
             data = self.samples.copy().transpose()
             priors_minmax = [self.get_prior_extrema(param) for param in params]
             
-            if self.add_Lya and "F_Lya" in optional_params:
+            if self.add_Lya:
                 if "F_Lya" in self.params:
                     if self.verbose:
                         print("Calculating ionising photon production efficiencies...")
@@ -392,7 +392,6 @@ class MN_IGM_DLA_solver(Solver):
                     F_Lya_samples = self.get_Lya_strength(data)
                     
                     params.append("F_Lya")
-                    if "F_Lya" not in logval_params: logval_params.append("F_Lya")
                     labels.append(r"Intrinsic Ly$\mathrm{\alpha}$ flux" + '\n')
                     math_labels.append(r"$F_\mathrm{{Ly \alpha, \, intr}} \, (\mathrm{{erg \, s^{{-1}} \, cm^{{-2}}}})$")
                     data = np.append(data, F_Lya_samples.reshape(1, n_samples), axis=0)
@@ -400,8 +399,14 @@ class MN_IGM_DLA_solver(Solver):
                     del F_Lya_samples
                 
                 # Apply unit conversion to the Lya flux
-                data[params.index("F_Lya")] = data[params.index("F_Lya")] / self.conv
-                priors_minmax[params.index("F_Lya")] = tuple(f/self.conv for f in priors_minmax[params.index("F_Lya")])
+                z = self.fixed_redshift if self.fixed_redshift else data[params.index("redshift")]
+                conv = 4.0 * np.pi * self.cosmo.luminosity_distance(z).to("cm").value**2 / self.conv
+                data[params.index("F_Lya")] = conv * data[params.index("F_Lya")]
+                priors_minmax[params.index("F_Lya")] = tuple((conv if self.fixed_redshift else np.median(conv))*f for f in priors_minmax[params.index("F_Lya")])
+                labels[params.index("F_Lya")] = r"Ly$\mathrm{\alpha}$ luminosity" + '\n'
+                math_labels[params.index("F_Lya")] = r"$L_\mathrm{{Ly \alpha}} \, (\mathrm{{erg \, s^{{-1}}}})$"
+                params[params.index("F_Lya")] = "L_Lya"
+                if "L_Lya" not in logval_params: logval_params.append("L_Lya")
         
         if self.add_Lya:
             if self.coupled_R_ion:
@@ -477,6 +482,8 @@ class MN_IGM_DLA_solver(Solver):
             if plot_corner:
                 if lann_params is None:
                     lann_params = []
+                if lpad_params is None:
+                    lpad_params = []
                 plt, sns = import_matplotlib()
                 if self.mpl_style:
                     plt.style.use(self.mpl_style)
@@ -535,11 +542,11 @@ class MN_IGM_DLA_solver(Solver):
                         plot_minmax[pi] = plot_limits[param]
                 
                 for ci in range(plot_n_dims): 
-                    axes_c[-1, ci].set_xlabel(axes_labels[ci], fontsize=axeslabelsize)
+                    axes_c[-1, ci].set_xlabel(axes_labels[ci], labelpad=10 if params[ci] in lpad_params else 0, fontsize=axeslabelsize)
                     for ax in axes_c[ci:, ci]:
                         ax.set_xlim(plot_minmax[ci])
                 for ri in range(1, plot_n_dims):
-                    axes_c[ri, 0].set_ylabel(axes_labels[ri], fontsize=axeslabelsize)
+                    axes_c[ri, 0].set_ylabel(axes_labels[ri], labelpad=10 if params[ri] in lpad_params else 0, fontsize=axeslabelsize)
                     for ax in axes_c[ri, :ri]:
                         ax.set_ylim(plot_minmax[ri])
                 
@@ -716,12 +723,12 @@ class MN_IGM_DLA_solver(Solver):
 
                     rdict["chi2{}".format(obs_ID)] = self.get_chi2(diff=diff, flux_err=self.flux_err_list[oi])
                     rdict["n_chan{}".format(obs_ID)] = n_chan
-                    n_dof = n_chan - self.n_dims
-                    rdict["red_chi2{}".format(obs_ID)] = rdict["chi2{}".format(obs_ID)] / n_dof
+                    rdict["n_dof{}".format(obs_ID)] = n_chan - self.n_dims
+                    rdict["red_chi2{}".format(obs_ID)] = rdict["chi2{}".format(obs_ID)] / rdict["n_dof{}".format(obs_ID)]
                     if self.verbose:
                         print("Best-fit χ^2 of observation {:d} ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(oi+1,
                                                                                     n_chan, self.n_dims, rdict["chi2{}".format(obs_ID)]))
-                        print("Best-fit reduced χ^2 of observation {:d} ({:d} DOF): {:.1f}".format(oi+1, n_dof, rdict["red_chi2{}".format(obs_ID)]))
+                        print("Best-fit reduced χ^2 of observation {:d} ({:d} DOF): {:.1f}".format(oi+1, rdict["n_dof{}".format(obs_ID)], rdict["red_chi2{}".format(obs_ID)]))
 
                     rdict["model_spectrum{}_lowerr".format(obs_ID)] = rdict["model_spectrum{}_median".format(obs_ID)] - np.percentile(profiles["model_spectrum{}".format(obs_ID)], 0.5*(100-68.2689), axis=0)
                     rdict["model_spectrum{}_uperr".format(obs_ID)] = np.percentile(profiles["model_spectrum{}".format(obs_ID)], 0.5*(100+68.2689), axis=0) - rdict["model_spectrum{}_median".format(obs_ID)]
@@ -732,11 +739,11 @@ class MN_IGM_DLA_solver(Solver):
                 
                 if self.n_obs > 1:
                     rdict["chi2"] = np.sum([rdict["chi2{}".format(obs_ID)] for obs_ID in self.obs_IDs])
-                    n_dof = self.n_chan - self.n_dims
-                    rdict["red_chi2"] = rdict["chi2"] / n_dof
+                    rdict["n_dof"] = self.n_chan - self.n_dims
+                    rdict["red_chi2"] = rdict["chi2"] / rdict["n_dof"]
                     if self.verbose:
                         print("Total best-fit χ^2 ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(self.n_chan, self.n_dims, rdict["chi2"]))
-                        print("Total best-fit reduced χ^2 ({:d} DOF): {:.1f}".format(n_dof, rdict["red_chi2"]))
+                        print("Total best-fit reduced χ^2 ({:d} DOF): {:.1f}".format(rdict["n_dof"], rdict["red_chi2"]))
                 
                 if self.add_DLA:
                     rdict["dla_transm_median"] = np.median(profiles["dla_transmission"], axis=0)
@@ -1402,7 +1409,7 @@ class MN_IGM_DLA_solver(Solver):
             if not "fixed_spec_norm" in self.intrinsic_spectrum:
                 self.params.append("spec_norm")
                 self.priors.append(self.intrinsic_spectrum["spec_norm_prior"])
-                self.labels.append("Cont. normalisation\n")
+                self.labels.append("Cont. norm.\n")
                 self.math_labels.append(r"$C \, (10^{{{:d}}} \, \mathrm{{erg \, s^{{-1}} \, cm^{{-2}} \, \AA^{{-1}}}})$".format(int(-np.log10(self.conv))))
             if not "fixed_beta_UV" in self.intrinsic_spectrum:
                 self.params.append("beta_UV")
@@ -1466,7 +1473,7 @@ class MN_IGM_DLA_solver(Solver):
 
                         self.params.append("f_esc")
                         self.priors.append(self.coupled_R_ion["f_esc_prior"])
-                        self.labels.append("LyC escape fraction\n")
+                        self.labels.append("LyC escape frac.\n")
                         self.math_labels.append(r"$f_\mathrm{{esc, \, LyC}}$")
                 else:
                     self.params.append("R_ion")
@@ -1481,7 +1488,7 @@ class MN_IGM_DLA_solver(Solver):
         
         # Sort parameters according to predetermined order
         self.all_params = ["redshift", "N_HI", "redshift_DLA", "b_turb", "spec_norm", "beta_UV",
-                            "x_HI_global", "R_ion", "xi_ion", "f_esc", "F_Lya", "delta_v_Lya", "sigma_v_Lya"]
+                            "x_HI_global", "R_ion", "xi_ion", "f_esc", "F_Lya", "L_Lya", "delta_v_Lya", "sigma_v_Lya"]
         sort_indices = [self.params.index(p) for p in sorted(self.params, key=lambda p: self.all_params.index(p))]
         self.params = [self.params[idx] for idx in sort_indices]
         self.priors = [self.priors[idx] for idx in sort_indices]
