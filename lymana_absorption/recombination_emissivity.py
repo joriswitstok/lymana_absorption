@@ -8,7 +8,7 @@ Joris Witstok, 2019
 
 import numpy as np
 
-from .constants import E_Lya
+from lymana_absorption.fund_constants import E_Lya
 
 def alpha_A_HII_Draine2011(T):
     """Case A H II recombination coefficient.

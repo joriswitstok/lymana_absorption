@@ -11,7 +11,7 @@ import numpy as np
 # Import astropy cosmology
 from astropy.cosmology import FLRW, FlatLambdaCDM, z_at_value
 from astropy import units
-from .constants import c, k_B, m_p, m_H, A_Lya, nu_Lya, K_Lya
+from lymana_absorption.fund_constants import c, k_B, m_p, m_H, A_Lya, nu_Lya, K_Lya
 
 def deltanu_D(T, b_turb):
     """
@@ -66,7 +66,18 @@ def Voigt(x, T, b_turb, approximation="Tasitsiomi2006"):
     
     return phi
 
-def correction_BL2015(x):
+def correction_Lee2013(nu):
+    """
+    
+    Correction to scattering cross section based on full quantum-mechanical treatment (from Lee 2013), given frequencies `nu` in Hz
+    
+    
+    """
+
+    # Correct cross-section profile (see equation (18) in Dijkstra 2014)
+    return (1.0 - 1.792 * (nu - nu_Lya) / nu_Lya)
+
+def correction_BL2015(nu):
     """
     
     Correction to scattering cross section based on quantum-mechanical treatment (from Bach & Lee 2015), given frequencies `nu` in Hz
@@ -75,9 +86,10 @@ def correction_BL2015(x):
     """
 
     # Correct cross-section profile
-    return (1.0 + 0.376 * (1.0 - np.exp(7.666*x)) - 1.922 * x - 1.036 * x**2)
+    x_BL = nu/nu_Lya - 1.0
+    return (1.0 + 0.376 * (1.0 - np.exp(7.666*x_BL)) - 1.922 * x_BL - 1.036 * x_BL**2)
 
-def sigma_alpha(x, T, b_turb=0.0, approximation="Tasitsiomi2006", quantum_correction=True):
+def sigma_alpha(x, T, b_turb=0.0, approximation="Tasitsiomi2006", quantum_correction="BL2015"):
     """
     
     Lyman-alpha scattering cross section (e.g. Dijkstra 2014) given a temperature `T` in K and optional turbulent velocity `b` in km/s;
@@ -90,11 +102,17 @@ def sigma_alpha(x, T, b_turb=0.0, approximation="Tasitsiomi2006", quantum_correc
     
     if quantum_correction:
         # Work out the frequency given the Doppler parameter x and deltanu_D
-        sigma_alpha *= correction_BL2015(x * deltanu_D(T, b_turb=b_turb) / nu_Lya)
+        nu = nu_Lya + x * deltanu_D(T, b_turb=b_turb)
+        if quantum_correction == "Lee2013":
+            # Apply the Bach & Lee (2015) correction valid redwards of 1100 Angstrom, use the linear Lee (2013) correction otherwise
+            sigma_alpha *= correction_Lee2013(nu)
+        if quantum_correction == "BL2015":
+            # Apply the Bach & Lee (2015) correction valid redwards of 1100 Angstrom, use the linear Lee (2013) correction otherwise
+            sigma_alpha *= np.where(nu > c/1100e-10, correction_Lee2013(nu), correction_BL2015(nu))
     
     return sigma_alpha
 
-def tau_DLA(wl_emit_array, N_HI, T, b_turb=0.0, approximation="Tasitsiomi2006"):
+def tau_DLA(wl_emit_array, N_HI, T, b_turb=0.0, approximation="Tasitsiomi2006", quantum_correction="BL2015"):
     """
     
     Lyman-alpha optical depth given a neutral hydrogen column density `N_HI` in cm^-2,
@@ -107,11 +125,11 @@ def tau_DLA(wl_emit_array, N_HI, T, b_turb=0.0, approximation="Tasitsiomi2006"):
     x = Doppler_x(wl_emit=wl_emit_array, T=T, b_turb=b_turb)
     
     # Convert column density from cm^-2 to m^-2 as the cross section is in m^2
-    tau = N_HI * 1e4 * sigma_alpha(x, T, b_turb=b_turb, approximation=approximation)
+    tau = N_HI * 1e4 * sigma_alpha(x, T, b_turb=b_turb, approximation=approximation, quantum_correction=quantum_correction)
     
     return tau
 
-def tau_integral(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi2006"):
+def tau_integral(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi2006", quantum_correction="BL2015"):
     """
     
     Lyman-alpha optical depth integral at observed wavelength `wl_obs` given a redshift range `z`,
@@ -135,9 +153,9 @@ def tau_integral(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi2006")
 
     dldz = c / (cosmo.H(z).to("Hz").value * (1.0 + z))
     
-    return np.trapz(dldz * x_HI * n_H * sigma_alpha(x, T, b_turb=0.0, approximation=approximation), x=z)
+    return np.trapz(dldz * x_HI * n_H * sigma_alpha(x, T, b_turb=0.0, approximation=approximation, quantum_correction=quantum_correction), x=z)
 
-def tau_integral_vec(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi2006"):
+def tau_integral_vec(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi2006", quantum_correction="BL2015"):
     """
     
     Lyman-alpha optical depth integral at observed wavelength `wl_obs` given a redshift range `z`,
@@ -166,11 +184,11 @@ def tau_integral_vec(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi20
 
     dldz = c / (cosmo.H(z).to("Hz").value * (1.0 + z))
     
-    return np.trapz(dldz[None, :] * x_HI[None, :] * n_H[None, :] * sigma_alpha(x, T, b_turb=0.0, approximation=approximation),
+    return np.trapz(dldz[None, :] * x_HI[None, :] * n_H[None, :] * sigma_alpha(x, T, b_turb=0.0, approximation=approximation, quantum_correction=quantum_correction),
                     x=z, axis=1)
 
 def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="constant", T=1e4, x_HI_global=1.0,
-            cosmo=None, z_reion=5.3, f_H=0.76, H0=70.0, Om0=0.3, Ob0=0.05, approximation="Tasitsiomi2006",
+            cosmo=None, z_reion=5.3, f_H=0.76, H0=70.0, Om0=0.3, Ob0=0.05, approximation="Tasitsiomi2006", quantum_correction="BL2015",
             use_vector=False):
     """
     
@@ -205,6 +223,10 @@ def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="co
         Matter density parameter at z = 0.
     Ob0 : float, optional
         Baryonic matter density parameter at z = 0.
+    approximation : str, optional
+        Which Voigt profile approximation to use: `"Tasitsiomi2006"` (Tasitsiomi 2006), or `"Tepper-Garcia2006"` (Tepper-Garcia 2006).
+    quantum_correction : str, optional
+        Which quantum-mechanical correction to use: `"BL2015"` (Bach & Lee 2015), valid above 1100 Angstrom, or `"Lee2013"` (Lee 2013).
     use_vector : bool, optional
         If True, replace `tau_integral` with `tau_integral_vec`; faster
         under some circumstances.
@@ -227,6 +249,7 @@ def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="co
     
     if hasattr(wl_obs_array, "__len__"):
         tau = np.zeros_like(wl_obs_array)
+        use_vector = use_vector and tau.size < 5000
     else:
         tau = 0.0
     
@@ -252,33 +275,36 @@ def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="co
     n_H = Delta * n_H_bar_0 * (1.0 + z)**3
 
     if use_vector:
-        tau += tau_integral_vec(
-            wl_obs=wl_obs_array, z=z, x_HI=x_HI, n_H=n_H, T=T, cosmo=cosmo,
-            approximation=approximation)
+        tau += tau_integral_vec(wl_obs=wl_obs_array, z=z, x_HI=x_HI, n_H=n_H, T=T, cosmo=cosmo,
+                                approximation=approximation, quantum_correction=quantum_correction)
         if small_bubble:
             # Second part of the integral, through the neutral IGM (assume x_HI = 1, Δ = 1, T = 1 K)
             z = np.linspace(z_reion, z_ion, 10000)
         
-            tau += tau_integral_vec(
-                wl_obs=wl_obs_array, z=z, x_HI=x_HI_global,
-                n_H=n_H_bar_0*(1.0 + z)**3, T=1, cosmo=cosmo, approximation=approximation)
+            tau += tau_integral_vec(wl_obs=wl_obs_array, z=z, x_HI=x_HI_global,
+                                    n_H=n_H_bar_0*(1.0 + z)**3, T=1, cosmo=cosmo,
+                                    approximation=approximation, quantum_correction=quantum_correction)
 
         # Return optical depth for vectorised calls.
         return tau
 
     if hasattr(wl_obs_array, "__len__"):
-        tau += np.array([tau_integral(wl_obs=wl_obs, z=z, x_HI=x_HI, n_H=n_H, T=T, cosmo=cosmo, approximation=approximation) for wl_obs in wl_obs_array])
+        tau += np.array([tau_integral(wl_obs=wl_obs, z=z, x_HI=x_HI, n_H=n_H, T=T,
+                                      cosmo=cosmo, approximation=approximation, quantum_correction=quantum_correction) for wl_obs in wl_obs_array])
     else:
-        tau += tau_integral(wl_obs=wl_obs_array, z=z, x_HI=x_HI, n_H=n_H, T=T, cosmo=cosmo, approximation=approximation)
+        tau += tau_integral(wl_obs=wl_obs_array, z=z, x_HI=x_HI, n_H=n_H, T=T,
+                            cosmo=cosmo, approximation=approximation, quantum_correction=quantum_correction)
 
     if small_bubble:
         # Second part of the integral, through the neutral IGM (assume Δ = 1, T = 1 K)
         z = np.linspace(z_reion, z_ion, 10000)
         
         if hasattr(wl_obs_array, "__len__"):
-            tau += np.array([tau_integral(wl_obs=wl_obs, z=z, x_HI=x_HI_global, n_H=n_H_bar_0*(1.0 + z)**3, T=1, cosmo=cosmo, approximation=approximation) for wl_obs in wl_obs_array])
+            tau += np.array([tau_integral(wl_obs=wl_obs, z=z, x_HI=x_HI_global, n_H=n_H_bar_0*(1.0 + z)**3, T=1,
+                                          cosmo=cosmo, approximation=approximation, quantum_correction=quantum_correction) for wl_obs in wl_obs_array])
         else:
-            tau += tau_integral(wl_obs=wl_obs_array, z=z, x_HI=x_HI_global, n_H=n_H_bar_0*(1.0 + z)**3, T=1, cosmo=cosmo, approximation=approximation)
+            tau += tau_integral(wl_obs=wl_obs_array, z=z, x_HI=x_HI_global, n_H=n_H_bar_0*(1.0 + z)**3, T=1,
+                                cosmo=cosmo, approximation=approximation, quantum_correction=quantum_correction)
     
     # Return optical depth
     return tau

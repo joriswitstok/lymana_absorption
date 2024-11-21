@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Fundamental constants and Lya .
+Fundamental and Lya-related constants.
 
 Joris Witstok, 2024
 """

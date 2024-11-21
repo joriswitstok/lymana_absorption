@@ -24,11 +24,11 @@ from scipy.integrate import solve_ivp
 
 from spectres import spectres
 
-from .constants import m_H, wl_Lya, E_Lya, Myr_to_seconds
-from .stats import get_mode_hdi
-from .mean_IGM_absorption import igm_absorption
-from .lymana_optical_depth import tau_IGM, tau_DLA
-from .recombination_emissivity import f_recA, f_recB, alpha_B_HII_Draine2011
+from lymana_absorption.fund_constants import m_H, wl_Lya, E_Lya, Myr_to_seconds
+from lymana_absorption.mode_stats import get_mode_hdi
+from lymana_absorption.mean_IGM_absorption import igm_absorption
+from lymana_absorption.lymana_optical_depth import tau_IGM, tau_DLA
+from lymana_absorption.recombination_emissivity import f_recA, f_recB, alpha_B_HII_Draine2011
 
 def import_yaml():
     import yaml
@@ -80,13 +80,20 @@ class MN_IGM_DLA_solver(Solver):
         # Intrinsic wavelength and flux (both in rest frame to allow variation in redshift)
         self.wl_emit_intrinsic = wl_emit_intrinsic # Angstrom
         self.flux_intrinsic = flux_intrinsic # in units of F_λ
-        self.model_intrinsic_spectrum = self.wl_emit_intrinsic is None or self.flux_intrinsic is None
-        if self.model_intrinsic_spectrum:
-            # If intrinsic spectrum not provided, parameters to model it should be given
+        self.template_intrinsic_spectrum = self.wl_emit_intrinsic is not None and self.flux_intrinsic is not None
+        self.power_law_continuum = intrinsic_spectrum.get("power_law_continuum", False)
+        if self.power_law_continuum:
+            # If intrinsic spectrum is modelled, parameters to model it should be given
             assert intrinsic_spectrum
             assert "wl0_emit" in intrinsic_spectrum or "wl0_observed" in intrinsic_spectrum
+        if self.template_intrinsic_spectrum:
+            # Decide whether provided template spectrum should be normalised
+            self.coupled_spec_norm_template = intrinsic_spectrum.get("coupled_spec_norm_template", False)
+            self.normalise_intr_spec = "spec_norm_template_prior" in intrinsic_spectrum
         else:
-            self.normalise_intr_spec = "spec_norm_prior" in intrinsic_spectrum
+            self.coupled_spec_norm_template = False
+            self.normalise_intr_spec = False
+        self.model_intrinsic_spectrum = self.power_law_continuum or self.coupled_spec_norm_template or self.normalise_intr_spec
 
         # Observed wavelength and flux
         self.wl_obs_list = []
@@ -177,7 +184,7 @@ class MN_IGM_DLA_solver(Solver):
         if self.add_IGM:
             self.compute_IGM_curves()
         
-        if not self.model_intrinsic_spectrum:
+        if self.template_intrinsic_spectrum:
             for wl_obs in self.wl_obs_list:
                 # Assure observed wavelength array is covered by the intrinsic spectrum
                 assert np.min(self.wl_emit_intrinsic) <= np.min(wl_obs / (1.0 + self.z_max))
@@ -209,7 +216,7 @@ class MN_IGM_DLA_solver(Solver):
             
             z_fid = self.fixed_redshift if self.fixed_redshift else np.mean(self.get_prior_extrema("redshift"))
             for rowi, ax, wl_obs, flux, flux_err in zip(range(self.n_obs), axes, self.wl_obs_list, self.flux_list, self.flux_err_list):
-                if not self.model_intrinsic_spectrum:
+                if self.template_intrinsic_spectrum:
                     ax.errorbar(self.wl_emit_intrinsic*(1.0 + z_fid), self.flux_intrinsic/(1.0 + z_fid),
                                 color='k', alpha=0.8, label="Intrinsic")
                 handles[rowi].append(ax.errorbar(wl_obs, flux, yerr=flux_err if flux_err.ndim == 1 else None,
@@ -226,10 +233,10 @@ class MN_IGM_DLA_solver(Solver):
             if self.add_DLA:
                 for rowi, ax in enumerate(axes):
                     for N_HI, c in zip(np.geomspace(*self.get_prior_extrema("N_HI"), 5), sns.color_palette("Set2")):
-                        wl_emit_array = wl_emit_range if self.model_intrinsic_spectrum else self.wl_emit_intrinsic
+                        wl_emit_array = wl_emit_range if self.power_law_continuum else self.wl_emit_intrinsic
                         taui = tau_DLA(wl_emit_array=wl_emit_array, N_HI=N_HI, T=self.add_DLA["T_HI"], b_turb=0.0)
                         
-                        theta = [np.mean(self.get_prior_extrema(p)) if p in ["spec_norm", "beta_UV"] else np.nan for p in self.params]
+                        theta = [np.mean(self.get_prior_extrema(p)) for p in self.params]
                         
                         handles[rowi].append(ax.plot(wl_emit_array * (1.0 + z_fid), np.exp(-taui)*self.get_intrinsic_profile(theta, wl_emit_array, z=z_fid),
                                                      linestyle='-.', color=c, alpha=0.8,
@@ -302,9 +309,8 @@ class MN_IGM_DLA_solver(Solver):
         n_samples = samples.shape[0]
         sample_indices_rank = np.arange(self.mpi_rank, n_samples, self.mpi_ncores)
         sample_indices_list = self.mpi_comm.gather(sample_indices_rank, root=0)
-        
         n_samples_rank = sample_indices_rank.size
-        sample_indices_rank_list = self.mpi_comm.gather(n_samples_rank, root=0)
+        n_samples_list = self.mpi_comm.gather(n_samples_rank, root=0)
 
         func_out = func(samples[0], **func_kwargs)
         dict_return = isinstance(func_out, dict)
@@ -332,15 +338,13 @@ class MN_IGM_DLA_solver(Solver):
                 func_samples = np.tile(fill_value, (n_samples, *func_samples_rank.shape[1:]))
                 for corei in range(self.mpi_ncores):
                     sample_indices_rank = sample_indices_list[corei]
-                    n_samples_rank = sample_indices_rank_list[corei]
+                    n_samples_rank = n_samples_list[corei]
                     if corei > 0:
-                        self.mpi_comm.Recv(sample_indices_rank, source=corei, tag=corei+self.mpi_ncores)
-                        self.mpi_comm.Recv(func_samples_rank, source=corei, tag=corei+2*self.mpi_ncores)
+                        self.mpi_comm.Recv(func_samples_rank, source=corei, tag=corei+self.mpi_ncores)
                     
                     func_samples[sample_indices_rank[:n_samples_rank]] = func_samples_rank[:n_samples_rank]
             else:
-                self.mpi_comm.Send(sample_indices_rank, dest=0, tag=self.mpi_rank+self.mpi_ncores)
-                self.mpi_comm.Send(func_samples_rank, dest=0, tag=self.mpi_rank+2*self.mpi_ncores)
+                self.mpi_comm.Send(func_samples_rank, dest=0, tag=self.mpi_rank+self.mpi_ncores)
                 func_samples = None
             
             func_samples_dict[key] = func_samples
@@ -352,7 +356,9 @@ class MN_IGM_DLA_solver(Solver):
 
     def analyse_posterior(self, hdi_params=None, limit_params=None, plot_limits=None, exclude_params=None,
                           lann_params=None, lpad_params=None, logval_params=["N_HI", "L_Lya", "xi_ion"],
-                          plot_corner=True, fig=None, figsize=None, figname=None, showfig=False,
+                          plot_corner=True, plot_R_ion_evolution=True,
+                          fig=None, figsize=None, figname=None, showfig=False,
+                          fig_R_ion=None, figsize_R_ion=None, figname_R_ion=None,
                           color=None, axeslabelsize=None, annlabelsize=None,
                           IGM_DLA_npz_file=None, x_HI_values=[0.0, 0.01, 0.1, 1.0]):
         assert self.fitting_complete and hasattr(self, "samples")
@@ -479,19 +485,80 @@ class MN_IGM_DLA_solver(Solver):
             param_vals = None
             param_labs = None
         else:
+            if plot_corner or plot_R_ion_evolution:
+                plt, sns = import_matplotlib()
+                sns.set_style("ticks")
+                corner = import_corner()
+                if self.mpl_style:
+                    plt.style.use(self.mpl_style)
+                if color is None:
+                    color = sns.color_palette()[0]
+                if axeslabelsize is None:
+                    axeslabelsize = plt.rcParams["axes.labelsize"]
+                if annlabelsize is None:
+                    annlabelsize = plt.rcParams["font.size"]
+
+            if self.add_Lya:
+                if self.coupled_R_ion:
+                    if plot_R_ion_evolution:
+                        if self.verbose:
+                            print("Plotting ionised bubble size evolution...")
+                        
+                        if figsize_R_ion is None:
+                            figsize_R_ion = (8.27/2, 11.69/4)
+                        if fig_R_ion is None:
+                            fig_R_ion = plt.figure(figsize=figsize_R_ion)
+                        
+                        ax_HI = fig_R_ion.add_subplot()
+                        ax_ion = ax_HI.twinx()
+                        ax_ion.tick_params(axis="both", which="both", direction="in", labelsize=axeslabelsize)
+                        ax_ion.axvline(x=0, linestyle='--', color='k', alpha=0.8)
+                        
+                        ax_ion.plot(R_ion_time, R_ion_evol_perc[1], color=color, alpha=0.8)
+                        ax_ion.fill_between(R_ion_time, y1=R_ion_evol_perc[0], y2=R_ion_evol_perc[2],
+                                            edgecolor="None", facecolor=color, alpha=0.2)
+                        
+                        # Mean hydrogen number density (in 1/Mpc^3) at redshift z, case-B recombination rate
+                        z = self.fixed_redshift if self.fixed_redshift else (param_limits["redshift"] if "redshift" in limit_params else params_hpds.get("redshift", params_perc[param])[0][0])
+                        n_H_bar = (self.coupled_R_ion["f_H"] * self.cosmo.critical_density(0) * self.cosmo.Ob(0) / (m_H * units.kg)).to("1/Mpc^3").value * (1.0 + z)**3
+                        alpha_B = (alpha_B_HII_Draine2011(self.coupled_R_ion["T_gas"]) * (units.cm**3/units.s)).to("Mpc^3/Myr").value # from cm^3/s to Mpc^3/Myr
+                        
+                        handles = []
+                        t_arr = np.linspace(0, self.coupled_R_ion["age_Myr"]/3, 100)
+                        handles.append(ax_ion.plot(-t_arr, R_ion_evol_perc[1][-1]*np.exp(self.cosmo.H(z).to("1/Myr").value*t_arr),
+                                                   linestyle='--', color=color, alpha=0.8, label="Hubble expansion")[0])
+                        
+                        ax_HI.tick_params(axis="both", which="both", direction="in", labelsize=axeslabelsize)
+                        handles.append(ax_HI.plot(-t_arr, 1.0-np.exp(-self.coupled_R_ion["C_HII"]*n_H_bar*alpha_B*t_arr),
+                                                  linestyle=':', color='k', alpha=0.8, label=r"$x_\mathrm{HI}$ evolution")[0])
+
+                        ax_ion.set_xlim(-self.coupled_R_ion["age_Myr"]/5, 1.1*self.coupled_R_ion["age_Myr"])
+                        ax_ion.set_ylim(bottom=0)
+                        
+                        ax_HI.set_yscale("log")
+                        
+                        ax_HI.set_xlabel(r"Lookback time $t \, (\mathrm{Myr})$", fontsize=axeslabelsize)
+                        ax_ion.set_ylabel(r"Ionised bubble radius $R_\mathrm{ion} \, (\mathrm{pMpc})$", fontsize=axeslabelsize)
+                        ax_HI.set_ylabel(r"Residual neutral hydrogen fraction $x_\mathrm{HI}$", fontsize=axeslabelsize)
+
+                        ax_ion.legend(handles=handles, loc="upper right", fontsize=axeslabelsize)
+                        
+                        if figname_R_ion:
+                            fig_R_ion.savefig(figname_R_ion, bbox_inches="tight")
+                        if showfig:
+                            plt.show()
+
+                        plt.close(fig_R_ion)
+                        del fig_R_ion, ax_ion, ax_HI
+                        
+                        if self.verbose:
+                            print("Saved and closed ionised bubble size evolution plot!")
+        
             if plot_corner:
                 if lann_params is None:
                     lann_params = []
                 if lpad_params is None:
                     lpad_params = []
-                plt, sns = import_matplotlib()
-                if self.mpl_style:
-                    plt.style.use(self.mpl_style)
-                sns.set_style("ticks")
-                if color is None:
-                    color = sns.color_palette()[0]
-                corner = import_corner()
-                
                 if exclude_params is None:
                     exclude_params = []
                 
@@ -511,10 +578,6 @@ class MN_IGM_DLA_solver(Solver):
                     figsize = (8.27/2, 8.27/2)
                 if fig is None:
                     fig = plt.figure(figsize=figsize)
-                if axeslabelsize is None:
-                    axeslabelsize = plt.rcParams["axes.labelsize"]
-                if annlabelsize is None:
-                    annlabelsize = plt.rcParams["font.size"]
                 
                 if plot_n_dims > 1:
                     fig = corner.corner(np.transpose(plot_data), bins=bins, range=plot_minmax,
@@ -549,45 +612,6 @@ class MN_IGM_DLA_solver(Solver):
                     axes_c[ri, 0].set_ylabel(axes_labels[ri], labelpad=10 if params[ri] in lpad_params else 0, fontsize=axeslabelsize)
                     for ax in axes_c[ri, :ri]:
                         ax.set_ylim(plot_minmax[ri])
-                
-                if self.add_Lya:
-                    if self.coupled_R_ion:
-                        if self.mpi_rank == 0 and self.verbose:
-                            print("Plotting ionised bubble size evolution...")
-                        
-                        ax_ion = fig.add_subplot([0.55, 0.675, 0.4, 0.3])
-                        ax_ion.tick_params(axis="both", which="both", direction="in", labelsize=axeslabelsize)
-                        ax_ion.axvline(x=0, linestyle='--', color='k', alpha=0.8)
-                        
-                        ax_ion.plot(R_ion_time, R_ion_evol_perc[1], color=color, alpha=0.8)
-                        ax_ion.fill_between(R_ion_time, y1=R_ion_evol_perc[0], y2=R_ion_evol_perc[2],
-                                            edgecolor="None", facecolor=color, alpha=0.2)
-                        
-                        # Mean hydrogen number density (in 1/Mpc^3) at redshift z, case-B recombination rate
-                        z = self.fixed_redshift if self.fixed_redshift else (param_limits["redshift"] if "redshift" in limit_params else params_hpds.get("redshift", params_perc[param])[0][0])
-                        n_H_bar = (self.coupled_R_ion["f_H"] * self.cosmo.critical_density(0) * self.cosmo.Ob(0) / (m_H * units.kg)).to("1/Mpc^3").value * (1.0 + z)**3
-                        alpha_B = (alpha_B_HII_Draine2011(self.coupled_R_ion["T_gas"]) * (units.cm**3/units.s)).to("Mpc^3/Myr").value # from cm^3/s to Mpc^3/Myr
-                        
-                        handles = []
-                        t_arr = np.linspace(0, self.coupled_R_ion["age_Myr"]/3, 100)
-                        handles.append(ax_ion.plot(-t_arr, R_ion_evol_perc[1][-1]*np.exp(self.cosmo.H(z).to("1/Myr").value*t_arr),
-                                                   linestyle='--', color=color, alpha=0.8, label="Hubble expansion")[0])
-                        
-                        ax_HI = ax_ion.twinx()
-                        ax_HI.tick_params(axis="both", which="both", direction="in", labelsize=axeslabelsize)
-                        handles.append(ax_HI.plot(-t_arr, 1.0-np.exp(-self.coupled_R_ion["C_HII"]*n_H_bar*alpha_B*t_arr),
-                                                  linestyle=':', color='k', alpha=0.8, label=r"$x_\mathrm{HI}$ evolution")[0])
-
-                        ax_ion.set_xlim(-self.coupled_R_ion["age_Myr"]/5, 1.1*self.coupled_R_ion["age_Myr"])
-                        ax_ion.set_ylim(bottom=0)
-                        
-                        ax_HI.set_yscale("log")
-                        
-                        ax_ion.set_xlabel(r"Lookback time $t \, (\mathrm{Myr})$", fontsize=axeslabelsize)
-                        ax_ion.set_ylabel(r"Ionised bubble radius $R_\mathrm{ion} \, (\mathrm{pMpc})$", fontsize=axeslabelsize)
-                        ax_HI.set_ylabel(r"Residual neutral hydrogen fraction $x_\mathrm{HI}$", fontsize=axeslabelsize)
-
-                        ax_ion.legend(handles=handles, loc="upper right", fontsize=axeslabelsize)
 
             del data, labels, priors_minmax
             if self.verbose:
@@ -823,12 +847,16 @@ class MN_IGM_DLA_solver(Solver):
                     # Compute flux profiles at fixed x_HI = 0.01, 0.1, 1.0; fix redshift and intrinsic spectrum, but record initial values
                     redshift_prior_init = self.redshift_prior.copy()
                     self.redshift_prior = {"type": "fixed", "params": [self.fixed_redshift if self.fixed_redshift else param_vals["redshift_value"][0]]}
-                    if self.model_intrinsic_spectrum or self.normalise_intr_spec:
+                    if self.model_intrinsic_spectrum:
                         intrinsic_spectrum_init = self.intrinsic_spectrum.copy()
                         if "spec_norm" in self.params:
                             self.intrinsic_spectrum["fixed_spec_norm"] = param_vals["spec_norm_value"][0]
+                        if "spec_norm_template" in self.params:
+                            self.intrinsic_spectrum["fixed_spec_norm_template"] = param_vals["spec_norm_template_value"][0]
                         if "beta_UV" in self.params:
                             self.intrinsic_spectrum["fixed_beta_UV"] = param_vals["beta_UV_value"][0]
+                        if self.coupled_spec_norm_template:
+                            self.template_intrinsic_spectrum = False
                     
                     # Reset IGM properties, but record initial values
                     add_IGM_init = self.add_IGM.copy()
@@ -861,14 +889,34 @@ class MN_IGM_DLA_solver(Solver):
                     
                     # Reset values
                     self.redshift_prior = redshift_prior_init
-                    if self.model_intrinsic_spectrum or self.normalise_intr_spec:
+                    if self.model_intrinsic_spectrum:
                         self.intrinsic_spectrum = intrinsic_spectrum_init
+                        if self.coupled_spec_norm_template:
+                            self.template_intrinsic_spectrum = True
                     self.add_IGM = add_IGM_init
                     self.add_DLA = add_DLA_init
                     self.add_Lya = add_Lya_init
                     self.coupled_R_ion = coupled_R_ion_init
                     self.set_prior()
-
+            
+            if self.model_intrinsic_spectrum:
+                if self.mpi_rank == 0 and self.verbose:
+                    print("Calculating best-fit continuum spectra of size {:d}{}...".format(self.wl_obs_model.size, self.mpi_run_str))
+                
+                cont_profiles = self.mpi_calculate(self.get_intrinsic_profile, return_profile="all")
+                if self.mpi_rank == 0:
+                    for p in list(cont_profiles):
+                        prof_name = "{}_cont_highres_model_spectrum".format(p)
+                        # Rescale continuum spectra to original flux units
+                        cont_model_spectrum_perc = np.percentile(cont_profiles[p] / self.conv, [0.5*(100-68.2689), 50, 0.5*(100+68.2689)], axis=0)
+                        rdict[prof_name + "_median"] = cont_model_spectrum_perc[1]
+                        rdict[prof_name + "_lowerr"], rdict[prof_name + "_uperr"] = np.diff(cont_model_spectrum_perc, axis=0)
+                        del cont_profiles[p]
+                    
+                    if self.verbose:
+                        print("Finished!")
+            
+            if self.mpi_rank == 0:
                 np.savez_compressed(IGM_DLA_npz_file, wl_obs_highres_model=self.wl_obs_model,
                                     grid_file_name=self.add_IGM.get("grid_file_name", None),
                                     **rdict, **param_vals, **param_labs)
@@ -994,14 +1042,22 @@ class MN_IGM_DLA_solver(Solver):
         
         return profile
 
-    def get_intrinsic_profile(self, theta, wl_emit_model, z=None, get_maximum=False, frame="observed", units="F_lambda"):
+    def get_intrinsic_profile(self, theta, wl_emit_model=None, z=None, get_maximum=False,
+                              frame="observed", units="F_lambda", return_profile="total"):
         if z is None and not get_maximum:
             z = self.fixed_redshift if self.fixed_redshift else self.get_val(theta, "redshift")
         if get_maximum:
             z = self.z_min
+        if wl_emit_model is None:
+            wl_emit_model = self.wl_obs_model / (1.0 + z) # in Angstrom
         
-        if self.model_intrinsic_spectrum:
-            C0 = (self.intrinsic_spectrum["fixed_spec_norm"] if "fixed_spec_norm" in self.intrinsic_spectrum else self.get_val(theta, "spec_norm", get_maximum=get_maximum)) * (1.0 + z)
+        profiles = {}
+        
+        if self.power_law_continuum and return_profile in ["power-law", "total", "all"]:
+            if "fixed_spec_norm" in self.intrinsic_spectrum:
+                C0 = self.intrinsic_spectrum["fixed_spec_norm"] * (1.0 + z)
+            else:
+                C0 = self.get_val(theta, "spec_norm", get_maximum=get_maximum) * (1.0 + z)
             
             if "wl0_observed" in self.intrinsic_spectrum:
                 wl0 = self.intrinsic_spectrum["wl0_observed"] / (1.0 + z)
@@ -1016,31 +1072,50 @@ class MN_IGM_DLA_solver(Solver):
                 else:
                     beta = self.get_val(theta, "beta_UV")
             
-            profile = C0 * (wl_emit_model/wl0)**beta
-        else:
+            profiles["power-law"] = C0 * (wl_emit_model/wl0)**beta
+        
+        if self.template_intrinsic_spectrum and return_profile in ["template", "total", "all"]:
             if hasattr(wl_emit_model, "__len__"):
-                profile = spectres(wl_emit_model, self.wl_emit_intrinsic, self.flux_intrinsic)
+                template_profile = spectres(wl_emit_model, self.wl_emit_intrinsic, self.flux_intrinsic)
             else:
-                profile = np.interp(wl_emit_model, self.wl_emit_intrinsic, self.flux_intrinsic)
+                template_profile = np.interp(wl_emit_model, self.wl_emit_intrinsic, self.flux_intrinsic)
             
-            if self.normalise_intr_spec:
-                profile *= self.intrinsic_spectrum["fixed_spec_norm"] if "fixed_spec_norm" in self.intrinsic_spectrum else self.get_val(theta, "spec_norm", get_maximum=get_maximum)
+            if self.coupled_spec_norm_template:
+                template_profile *= self.get_Lya_strength(theta, z=z, luminosity=False, get_maximum=get_maximum)
+            elif self.normalise_intr_spec:
+                if "fixed_spec_norm_template" in self.intrinsic_spectrum:
+                    template_profile *= self.intrinsic_spectrum["fixed_spec_norm_template"]
+                else:
+                    template_profile *= self.get_val(theta, "spec_norm_template", get_maximum=get_maximum)
+            
+            profiles["template"] = template_profile
+        
+        total_profile = np.zeros_like(wl_emit_model)
+        for p in profiles:
+            total_profile = total_profile + profiles[p]
+        profiles["total"] = total_profile
         
         if frame == "observed":
             # Convert intrinsic flux density between the rest frame, as provided, and the observed frame, in which the
             # flux density in units of F_λ decreases by a factor (1+z), while the wavelength increases by the same factor
-            profile /= (1.0 + z)
+            for p in profiles:
+                profiles[p] /= (1.0 + z)
         else:
             assert frame == "intrinsic"
         
         if units.startswith('L'):
             # Convert flux 1/conv erg/s/cm^2 to luminosity in erg/s
-            profile *= 1.0 / self.conv * 4.0 * np.pi * self.cosmo.luminosity_distance(z).to("cm").value**2 # in erg/s
+            for p in profiles:
+                profiles[p] *= 1.0 / self.conv * 4.0 * np.pi * self.cosmo.luminosity_distance(z).to("cm").value**2 # in erg/s
         if units.endswith("_nu"):
             # Convert from F_lambda to F_nu
-            profile *= wl_emit_model**2 / 299792458.0e10
+            for p in profiles:
+                profiles[p] *= wl_emit_model**2 / 299792458.0e10
         
-        return profile
+        if return_profile == "all":
+            return profiles
+        else:
+            return profiles[return_profile]
     
     def compute_IGM_curves(self, verbose=None):
         if verbose is None:
@@ -1111,33 +1186,41 @@ class MN_IGM_DLA_solver(Solver):
                 points_mg = np.meshgrid(*points, indexing="ij")
                 if self.mpi_rank == 0 and verbose:
                     print("Computing {:d} IGM damping-wing transmission curves of size {:d}{}...".format(n_curves, array_sizes[0], self.mpi_run_str))
+                
+                mg_indices_rank = np.arange(self.mpi_rank, n_curves, self.mpi_ncores)
+                mg_indices_list = self.mpi_comm.gather(mg_indices_rank, root=0)
+                n_mg_rank = mg_indices_rank.size
+                n_mg_list = self.mpi_comm.gather(n_mg_rank, root=0)
 
-                mg_indices_rank = [np.arange(corei, n_curves, self.mpi_ncores) for corei in range(self.mpi_ncores)]
-                IGM_damping_arrays = np.tile(np.nan, (array_sizes[0], n_curves))
+                IGM_damping_arrays_rank = np.tile(np.nan, (n_mg_rank, array_sizes[0]))
 
                 self.mpi_synchronise(self.mpi_comm)
-                for mgi in mg_indices_rank[self.mpi_rank]:
+                for idx, mgi in enumerate(mg_indices_rank):
                     ind = (0,) + np.unravel_index(mgi, array_sizes[1:])
                     z = self.fixed_redshift if self.fixed_redshift else points_mg[self.IGM_params.index("redshift")][ind]
                     R_ion = points_mg[self.IGM_params.index("R_ion")][ind] if self.add_IGM["vary_R_ion"] else self.add_IGM["fixed_R_ion"]
                     x_HI_global = points_mg[self.IGM_params.index("x_HI_global")][ind] if self.add_IGM["vary_x_HI_global"] else self.add_IGM["fixed_x_HI_global"]
                     
-                    IGM_damping_arrays[:, mgi] = np.exp(-tau_IGM(wl_obs_array=wl_obs_array, z_s=z, R_ion=R_ion, x_HI_global=x_HI_global,
-                                                                 cosmo=self.cosmo, use_vector=True))
+                    IGM_damping_arrays_rank[idx] = np.exp(-tau_IGM(wl_obs_array=wl_obs_array, z_s=z, R_ion=R_ion, x_HI_global=x_HI_global,
+                                                                   cosmo=self.cosmo, use_vector=True))
+
+                self.mpi_synchronise(self.mpi_comm)
+                if self.mpi_rank == 0:
+                    # Receive arrays from each core and combine
+                    IGM_damping_arrays = np.tile(np.nan, (array_sizes[0], n_curves))
+                    for corei in range(self.mpi_ncores):
+                        mg_indices_rank = mg_indices_list[corei]
+                        n_mg_rank = n_mg_list[corei]
+                        if corei > 0:
+                            self.mpi_comm.Recv(IGM_damping_arrays_rank, source=corei, tag=corei)
+                        
+                        IGM_damping_arrays[:, mg_indices_rank[:n_mg_rank]] = IGM_damping_arrays_rank[:n_mg_rank].transpose()
+                else:
+                    self.mpi_comm.Send(IGM_damping_arrays_rank, dest=0, tag=self.mpi_rank)
+                    IGM_damping_arrays = None
                 
                 if self.mpi_run:
-                    # Use gather to concatenate arrays from all ranks on the master rank
-                    self.mpi_synchronise(self.mpi_comm)
-                    IGM_damping_arrays_full = np.zeros((self.mpi_ncores, array_sizes[0], n_curves)) if self.mpi_rank == 0 else None
-                    self.mpi_comm.Gather(IGM_damping_arrays, IGM_damping_arrays_full, root=0)
-                    if self.mpi_rank == 0:
-                        for corei in range(1, self.mpi_ncores):
-                            for mgi in mg_indices_rank[corei]:
-                                IGM_damping_arrays[:, mgi] = IGM_damping_arrays_full[corei, :, mgi]
-                        del IGM_damping_arrays_full
                     IGM_damping_arrays = self.mpi_comm.bcast(IGM_damping_arrays, root=0)
-                    self.mpi_synchronise(self.mpi_comm)
-                
                 IGM_damping_arrays = IGM_damping_arrays.reshape(array_sizes)
                 if self.add_IGM.get("grid_file_name", False) and self.mpi_rank == 0:
                     np.savez_compressed(self.add_IGM["grid_file_name"], IGM_damping_arrays=IGM_damping_arrays,
@@ -1204,7 +1287,7 @@ class MN_IGM_DLA_solver(Solver):
         
             # Convert intrinsic flux at 1500 Å to ionising photon rate (flux)
             F_nu_UV = self.get_intrinsic_profile(theta, 1500.0, frame="intrinsic", units="L_nu" if luminosity else "F_nu",
-                                                 get_maximum=get_maximum)
+                                                 get_maximum=get_maximum, return_profile="power-law" if self.coupled_spec_norm_template else "total")
             F_ion = F_nu_UV * self.get_val(theta, "xi_ion", get_maximum=get_maximum)
 
         return F_ion
@@ -1405,7 +1488,7 @@ class MN_IGM_DLA_solver(Solver):
             self.labels.append("Redshift ")
             self.math_labels.append(r"$z_\mathrm{sys}$")
 
-        if self.model_intrinsic_spectrum:
+        if self.power_law_continuum:
             if not "fixed_spec_norm" in self.intrinsic_spectrum:
                 self.params.append("spec_norm")
                 self.priors.append(self.intrinsic_spectrum["spec_norm_prior"])
@@ -1416,12 +1499,12 @@ class MN_IGM_DLA_solver(Solver):
                 self.priors.append(self.intrinsic_spectrum["beta_UV_prior"])
                 self.labels.append("UV slope ")
                 self.math_labels.append(r"$\beta_\mathrm{{UV}}$")
-        else:
+        if self.template_intrinsic_spectrum:
             if self.normalise_intr_spec:
-                self.params.append("spec_norm")
-                self.priors.append(self.intrinsic_spectrum["spec_norm_prior"])
+                self.params.append("spec_norm_template")
+                self.priors.append(self.intrinsic_spectrum["spec_norm_template_prior"])
                 self.labels.append("Cont. norm. ")
-                self.math_labels.append(r"$C$")
+                self.math_labels.append(r"$C_\mathrm{template}$")
         
         if self.add_Lya:
             self.params.append("F_Lya")
@@ -1487,7 +1570,7 @@ class MN_IGM_DLA_solver(Solver):
                 self.math_labels.append(r"$\bar{{x}}_\mathrm{{HI}}$")
         
         # Sort parameters according to predetermined order
-        self.all_params = ["redshift", "N_HI", "redshift_DLA", "b_turb", "spec_norm", "beta_UV",
+        self.all_params = ["redshift", "N_HI", "redshift_DLA", "b_turb", "spec_norm", "beta_UV", "spec_norm_template",
                             "x_HI_global", "R_ion", "xi_ion", "f_esc", "F_Lya", "L_Lya", "delta_v_Lya", "sigma_v_Lya"]
         sort_indices = [self.params.index(p) for p in sorted(self.params, key=lambda p: self.all_params.index(p))]
         self.params = [self.params[idx] for idx in sort_indices]
