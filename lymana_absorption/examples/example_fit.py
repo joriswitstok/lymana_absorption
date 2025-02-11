@@ -49,7 +49,6 @@ mpi_synchronise(mpi_comm)
 from astropy import table
 from astropy.io import fits
 from spectres import spectres
-sys.path.append("/Users/Joris/Documents/Research/Collabcode/lymana_absorption/")
 from lymana_absorption.fit_lymana_absorption import MN_IGM_DLA_solver
 
 # Import astropy cosmology, given H0 and Omega_matter

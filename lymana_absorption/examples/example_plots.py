@@ -1,6 +1,4 @@
 # Import Lyman-alpha absorption profile fitting class
-import sys
-sys.path.append("/Users/Joris/Documents/Research/Collabcode/lymana_absorption/lymana_absorption")
 from lymana_optical_depth import *
 
 
@@ -58,7 +56,7 @@ if __name__ == "__main__":
     # plt.show()
     plt.close(fig)
 
-    # Example calculation for IGM damping-wing absorption, inspired by Mason & Gronke (2020)
+    # Example calculation for IGM transmission curves, inspired by Mason & Gronke (2020)
     z_source = 7.0
     wl_emit_array = np.linspace(1200, 1230, 500)
     wl_obs_array = wl_emit_array * (1.0 + z_source)
