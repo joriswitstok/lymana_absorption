@@ -59,20 +59,20 @@ cosmo = FlatLambdaCDM(H0=67.4, Om0=0.315, Ob0=0.02237/0.674**2, Tcmb0=2.726)
 conv = 1e20
 
 if mpi_rank == 0:
-    with fits.open("../aux/GS_z13_3215_prism_clear_v3.1_1D.fits") as hdulist:
+    with fits.open("../auxiliary/GS_z13_3215_prism_clear_v3.1_1D.fits") as hdulist:
         wl = hdulist["WAVELENGTH"].data * 1e10 # from m to Å
-    with fits.open("../aux/GS_z13_1210_3215_1D.fits") as hdulist:
+    with fits.open("../auxiliary/GS_z13_1210_3215_1D.fits") as hdulist:
         flux = hdulist["DATA"].data * 1e-7 # from W/m^3 to erg/s/cm^2/Å
         flux_err = hdulist["ERR"].data * 1e-7 # from W/m^3 to erg/s/cm^2/Å
     
     # Read in a BEAGLE model's intrinsic wavelength and flux (both in rest frame)
-    BEAGLE_fits = "../aux/GS-z13-1210-3215_BEAGLE_MAP.fits"
+    BEAGLE_fits = "../auxiliary/GS-z13-1210-3215_BEAGLE_MAP.fits"
     z_BEAGLE = float(table.Table.read(BEAGLE_fits, hdu="GALAXY PROPERTIES")["redshift"])
     wl_emit_intrinsic = np.array(table.Table.read(BEAGLE_fits, hdu="FULL SED WL")["wl"][0]) # Angstrom
     with fits.open(BEAGLE_fits) as f:
         flux_intrinsic = np.array(f["FULL SED"].data) * conv # 1/conv erg/s/cm^2/Angstrom (rest frame)
     
-    res_table = table.Table.read("../aux/jwst_nirspec_prism_clear_disp.fits")
+    res_table = table.Table.read("../auxiliary/jwst_nirspec_prism_clear_disp.fits")
     wl_obs_res = np.array(res_table["WAVELENGTH"].data) * 1e4 # micron to Angstrom
     resolution_curve = np.array(res_table['R'].data)
 else:
