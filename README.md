@@ -25,14 +25,14 @@ Running the code requires the following Python packages:
 - `numpy`
 - `scipy`
 - `astropy`
-- `mpi4py`
-- `pymultinest`
 - `spectres`
 - `corner`
 - `matplotlib`
 - `seaborn`
 - `mock`
-  
+- `pymultinest` (optional; required for fitting)
+- `mpi4py` (optional; for MPI functionality)
+
 Most of these modules are easily installed via the file `lya3.yml` provided in the main folder, which can be used to create an `conda` environment in Python 3 that contains all the required packages (see the `conda` [documentation on environments](https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html) for more details). However, the `lymana_absorption` code and several MPI-related packages (`mpi4py` and `pymultinest`) should be installed via `pip` to ensure properly linking to a local MPI installation (if using MPI functionality).
 
 If you have `conda` installed and set up as a `python` distribution, creating an environment can be achieved with:
@@ -85,4 +85,4 @@ If it has finished successfully, several figures illustrating IGM and DLA transm
 
 ### <a name="Running_the_fitting_script"></a>Running a test script to fit observed damping-wing absorption
 
-A more advanced example usage case is illustrated by running the file `example_fit.py` (again located in the `examples` folder). This script performs a fitting routine to the observed spectrum of GS-z13 (as in [Hainline et al. 2024]()), given a resolution curve and an intrinsic model spectrum.
+A more advanced example usage case is illustrated by running the file `example_fit.py` (again located in the `examples` folder). This script requires `pymultinest` (and `mpi4py`, for MPI functionality) to be installed and performs a fitting routine to the observed spectrum of GS-z13 (as in [Hainline et al. 2024]()), given a resolution curve and an intrinsic model spectrum.
