@@ -19,7 +19,7 @@ setup(name='lymana_absorption',
       ],
       url='https://github.com/joriswitstok/lymana_absorption/',
       author='Joris Witstok',
-      author_email='jnw30@cam.ac.uk',
+      author_email='joris.witstok@nbi.ku.dk',
       license='MIT',
       packages=find_packages(),
       install_requires=[
