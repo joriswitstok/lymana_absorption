@@ -49,7 +49,7 @@ mpi_synchronise(mpi_comm)
 from astropy import table
 from astropy.io import fits
 from spectres import spectres
-from lymana_absorption.fit_lymana_absorption import MN_IGM_DLA_solver
+from lymana_absorption.fit_lymana_absorption import IGM_DLA_solver
 
 # Import astropy cosmology, given H0 and Omega_matter
 from astropy.cosmology import FlatLambdaCDM
@@ -101,7 +101,7 @@ redshift_dict = {"vary": True, "min_z": z - dz, "max_z": z + dz}
 add_IGM = {"cosmo": cosmo, "vary_R_ion": False, "fixed_R_ion": 0.0, "vary_x_HI_global": False, "fixed_x_HI_global": 1.0,
            "grid_file_name": "../IGM_curves.npz"}
 add_DLA = {}
-# add_DLA = {"min_logN_HI": 19, "max_logN_HI": 24, "T_HI": 100.0, "vary_redshift": False, "vary_b_turb": False}
+# add_DLA = {"min_logN_HI": 19, "max_logN_HI": 24, "T_HI": 100.0, "vary_redshift": False, "vary_f_cov": False, "vary_b_turb": False}
 convolve = {"R_min": 1000.0, "wl_obs_res": wl_obs_res, "resolution_curve": resolution_curve}
 
 fit_select = (wl/(1.0+z+dz) > 1100.0) * (wl/(1.0+z-dz) < 1520.0)
@@ -116,7 +116,7 @@ if not os.path.exists(omnrfol) and mpi_rank == 0:
 mpi_synchronise(mpi_comm)
 try:
     os.chdir(omnrfol)
-    MN_solv = MN_IGM_DLA_solver(wl_emit_intrinsic=wl_emit_intrinsic, flux_intrinsic=flux_intrinsic,
+    MN_solv = IGM_DLA_solver(wl_emit_intrinsic=wl_emit_intrinsic, flux_intrinsic=flux_intrinsic,
                                 wl_obs=wl_obs_fit, flux=flux_fit, flux_err=flux_fit_err,
                                 redshift=redshift_dict, add_IGM=add_IGM, add_DLA=add_DLA, convolve=convolve,
                                 plot_setup=False, mpi_run=mpi_run, mpi_comm=mpi_comm, mpi_rank=mpi_rank,

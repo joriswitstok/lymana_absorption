@@ -104,7 +104,7 @@ def sigma_alpha(x, T, b_turb=0.0, approximation="Tasitsiomi2006", quantum_correc
         # Work out the frequency given the Doppler parameter x and deltanu_D
         nu = nu_Lya + x * deltanu_D(T, b_turb=b_turb)
         if quantum_correction == "Lee2013":
-            # Apply the Bach & Lee (2015) correction valid redwards of 1100 Angstrom, use the linear Lee (2013) correction otherwise
+            # Use the linear Lee (2013) correction
             sigma_alpha *= correction_Lee2013(nu)
         if quantum_correction == "BL2015":
             # Apply the Bach & Lee (2015) correction valid redwards of 1100 Angstrom, use the linear Lee (2013) correction otherwise
@@ -153,7 +153,7 @@ def tau_integral(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi2006",
 
     dldz = c / (cosmo.H(z).to("Hz").value * (1.0 + z))
     
-    return np.trapz(dldz * x_HI * n_H * sigma_alpha(x, T, b_turb=0.0, approximation=approximation, quantum_correction=quantum_correction), x=z)
+    return np.trapezoid(dldz * x_HI * n_H * sigma_alpha(x, T, b_turb=0.0, approximation=approximation, quantum_correction=quantum_correction), x=z)
 
 def tau_integral_vec(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi2006", quantum_correction="BL2015"):
     """
@@ -184,7 +184,7 @@ def tau_integral_vec(wl_obs, z, x_HI, n_H, T, cosmo, approximation="Tasitsiomi20
 
     dldz = c / (cosmo.H(z).to("Hz").value * (1.0 + z))
     
-    return np.trapz(dldz[None, :] * x_HI[None, :] * n_H[None, :] * sigma_alpha(x, T, b_turb=0.0, approximation=approximation, quantum_correction=quantum_correction),
+    return np.trapezoid(dldz[None, :] * x_HI[None, :] * n_H[None, :] * sigma_alpha(x, T, b_turb=0.0, approximation=approximation, quantum_correction=quantum_correction),
                     x=z, axis=1)
 
 def tau_IGM(wl_obs_array, z_s, R_ion=1.0, Delta=1.0, x_HI=1e-8, x_HI_profile="constant", T=1e4, x_HI_global=1.0,
