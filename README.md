@@ -7,7 +7,7 @@
 
 ## <a name="Description"></a>Description
 
-This is a code that uses the pymultinest package ([Feroz et al. 2009](); [Buchner et al. 2014](https://ui.adsabs.harvard.edu/abs/2014A%26A...564A.125B/abstract)) to calculate and fit Lyman-alpha (Lyα) damping-wing absorption, both from the IGM and local damped-Lyα absorbing (DLA) systems. The main functionality is described in [D'Eugenio et al. (2023)](https://ui.adsabs.harvard.edu/abs/2023arXiv231109908D/abstract) and [Hainline et al. (2024)](). Below, its usage is illustrated with examples.
+This is a code that uses the pymultinest package ([Feroz et al. 2009](https://scixplorer.org/abs/2009MNRAS.398.1601F/abstract); [Buchner et al. 2014](https://scixplorer.org/abs/2014A%26A...564A.125B/abstract)) to calculate and fit Lyman-alpha (Lyα) damping-wing absorption, both from the IGM and local damped-Lyα absorbing (DLA) systems. The functionality for estimating ionised bubble sizes is described in [Witstok et al. (2024)](https://scixplorer.org/abs/2024A%26A...682A..40W/abstract) and [Witstok et al. (2025a)](https://scixplorer.org/abs/2025MNRAS.536...27W/abstract), while a full spectral modelling approach, including Lyα line and continuum emission that is attenuated by IGM+DLA absorption is described in [Witstok et al. (2025b)](https://scixplorer.org/abs/2025Natur.639..897W/abstract). Additional examples can be found in [D'Eugenio et al. (2024)](https://scixplorer.org/abs/2024A%26A...689A.152D/abstract), [Hainline et al. (2024)](https://scixplorer.org/abs/2024ApJ...976..160H/abstract), and [Helton et al. (2026)](https://scixplorer.org/abs/2026arXiv260938080H/abstract). Below, its usage is illustrated with examples.
 
 ## <a name="Installation"></a>Installation and setup
 
