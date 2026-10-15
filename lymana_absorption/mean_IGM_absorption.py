@@ -96,12 +96,12 @@ def igm_absorption(lambda_obs, z):
     """
     Function adapted from https://github.com/brantr/igm-absorption
     Provide an array of observed wavelengths in Angstrom
-    and return an array of the attenuation at a redshift z owing
+    and return an array of the mean transmission at a redshift z owing
     to neutral H in the IGM along the line of sight.
     See Inoue et al. (2014)
     """
-    attenuation = np.exp(-tau_IGM(lambda_obs, z))
+    transmission = np.exp(-tau_IGM(lambda_obs, z))
 
-    return attenuation
+    return transmission
 
 

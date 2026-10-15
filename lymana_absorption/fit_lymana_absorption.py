@@ -204,7 +204,7 @@ class IGM_DLA_solver():
             max_params = [r[1] for r in priors_minmax]
             print("\n{:<5}\t{:<30}\t{:<20}\t{:<20}\t{:<20}".format('', "Parameter", "Minimum prior value", "Mean prior value", "Maximum prior value"))
             print(*["{:<5}\t{:<30}\t{:<20}\t{:<20}\t{:<20}".format(*x) for x in zip(range(1, self.n_dims+1), self.params, min_params, mean_params, max_params)], sep='\n')
-            print("\n{:<5}\t{:<30}\t{:<20}\t{:<20}\t{:<20}".format('', "χ^2", self.get_chi2(min_params), self.get_chi2(mean_params), self.get_chi2(max_params)))
+            print("\n{:<5}\t{:<30}\t{:<20}\t{:<20}\t{:<20}".format('', "χ²", self.get_chi2(min_params), self.get_chi2(mean_params), self.get_chi2(max_params)))
             print("{:<5}\t{:<30}\t{:<20}\t{:<20}\t{:<20}\n".format('', "Log-likelihood", self.LogLikelihood(min_params), self.LogLikelihood(mean_params), self.LogLikelihood(max_params)))
         
         if plot_setup and self.mpi_rank == 0:
@@ -321,7 +321,7 @@ class IGM_DLA_solver():
 
     def __str__(self):
         assert self.fitting_complete
-        s = "{} model with {:d} dimensions\n".format("χ^2 minimisation" if self.minimise_chi2 else "MultiNest", self.n_dims)
+        s = "{} model with {:d} dimensions\n".format("χ² minimisation" if self.minimise_chi2 else "MultiNest", self.n_dims)
         if not self.minimise_chi2:
             s += "Evidence ln Z = {:.1f} +- {:.1f}\n".format(self.logZ, self.logZerr)
             s += "Parameter values:\n"
@@ -447,9 +447,9 @@ class IGM_DLA_solver():
             rdict["n_dof{}".format(obs_ID)] = n_chan - self.n_dims
             rdict["red_chi2{}".format(obs_ID)] = rdict["chi2{}".format(obs_ID)] / rdict["n_dof{}".format(obs_ID)]
             if self.mpi_rank == 0 and self.verbose:
-                print("Best-fit χ^2 of observation {:d} ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(oi+1,
+                print("Best-fit χ² of observation {:d} ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(oi+1,
                                                                             n_chan, self.n_dims, rdict["chi2{}".format(obs_ID)]))
-                print("Best-fit reduced χ^2 of observation {:d} ({:d} DOF): {:.1f}".format(oi+1, rdict["n_dof{}".format(obs_ID)], rdict["red_chi2{}".format(obs_ID)]))
+                print("Best-fit reduced χ² of observation {:d} ({:d} DOF): {:.1f}".format(oi+1, rdict["n_dof{}".format(obs_ID)], rdict["red_chi2{}".format(obs_ID)]))
         
         rdict["chi2"] = np.sum([rdict["chi2{}".format(obs_ID)] for obs_ID in self.obs_IDs])
         rdict["n_chan"] = self.n_chan
@@ -457,8 +457,8 @@ class IGM_DLA_solver():
         rdict["n_dof"] = self.n_chan - self.n_dims
         rdict["red_chi2"] = rdict["chi2"] / rdict["n_dof"]
         if self.mpi_rank == 0 and self.verbose:
-            print("Total best-fit χ^2 ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(self.n_chan, self.n_dims, rdict["chi2"]))
-            print("Total best-fit reduced χ^2 ({:d} DOF): {:.1f}".format(rdict["n_dof"], rdict["red_chi2"]))
+            print("Total best-fit χ² ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(self.n_chan, self.n_dims, rdict["chi2"]))
+            print("Total best-fit reduced χ² ({:d} DOF): {:.1f}".format(rdict["n_dof"], rdict["red_chi2"]))
         
         param_vals = {}
         param_labs = {}
@@ -503,7 +503,7 @@ class IGM_DLA_solver():
                 diff = self.flux_list[oi] - observed_profiles["observed_spectrum{}".format(obs_ID)]
                 rdict["chi2{}_fixed_xHI{}".format(obs_ID, x_HI_key)] = self.get_chi2(diff=diff, flux_err=self.flux_err_list[oi])
                 if self.mpi_rank == 0 and self.verbose:
-                    print("χ^2 of observation {:d} for fixed x_HI = {:.3g}: {:.1f}".format(oi+1, x_HI, rdict["chi2{}_fixed_xHI{}".format(obs_ID, x_HI_key)]))
+                    print("χ² of observation {:d} for fixed x_HI = {:.3g}: {:.1f}".format(oi+1, x_HI, rdict["chi2{}_fixed_xHI{}".format(obs_ID, x_HI_key)]))
         # Reset values
         self.restore_prior()
         
@@ -578,6 +578,7 @@ class IGM_DLA_solver():
                 if self.mpi_rank == 0:
                     R_ion_time = R_ion_results['t'][0]
                     R_ion_samples = R_ion_results["R_ion(t)"][:, -1]
+                    print("Ionised bubble size: R_ion > {:.3f} (2σ) / {:.3f} (3σ) pMpc".format(*np.percentile(R_ion_samples, [100-95.4499, 100-99.7300])))
                     R_ion_evol_perc = np.percentile(R_ion_results["R_ion(t)"], [0.5*(100-68.2689), 50, 0.5*(100+68.2689)], axis=0)
                 del R_ion_results
                 
@@ -929,9 +930,9 @@ class IGM_DLA_solver():
                     rdict["red_chi2min{}".format(obs_ID)] = rdict["chi2min{}".format(obs_ID)] / rdict["n_dof{}".format(obs_ID)]
                     rdict["red_chi2{}".format(obs_ID)] = rdict["chi2{}".format(obs_ID)] / rdict["n_dof{}".format(obs_ID)]
                     if self.verbose:
-                        print("Best-fit χ^2 of observation {:d} ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(oi+1,
+                        print("Best-fit χ² of observation {:d} ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(oi+1,
                                                                                     n_chan, self.n_dims, rdict["chi2{}".format(obs_ID)]))
-                        print("Best-fit reduced χ^2 of observation {:d} ({:d} DOF): {:.1f}".format(oi+1, rdict["n_dof{}".format(obs_ID)], rdict["red_chi2{}".format(obs_ID)]))
+                        print("Best-fit reduced χ² of observation {:d} ({:d} DOF): {:.1f}".format(oi+1, rdict["n_dof{}".format(obs_ID)], rdict["red_chi2{}".format(obs_ID)]))
 
                     rdict["model_spectrum{}_lowerr".format(obs_ID)] = rdict["model_spectrum{}_median".format(obs_ID)] - np.percentile(profiles["model_spectrum{}".format(obs_ID)], 0.5*(100-68.2689), axis=0)
                     rdict["model_spectrum{}_uperr".format(obs_ID)] = np.percentile(profiles["model_spectrum{}".format(obs_ID)], 0.5*(100+68.2689), axis=0) - rdict["model_spectrum{}_median".format(obs_ID)]
@@ -948,8 +949,8 @@ class IGM_DLA_solver():
                 rdict["red_chi2min"] = rdict["chi2min"] / rdict["n_dof"]
                 rdict["red_chi2"] = rdict["chi2"] / rdict["n_dof"]
                 if self.verbose:
-                    print("Total best-fit χ^2 ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(self.n_chan, self.n_dims, rdict["chi2"]))
-                    print("Total best-fit reduced χ^2 ({:d} DOF): {:.1f}".format(rdict["n_dof"], rdict["red_chi2"]))
+                    print("Total best-fit χ² ({:d} wavelength bins, {:d} free parameters): {:.1f}".format(self.n_chan, self.n_dims, rdict["chi2"]))
+                    print("Total best-fit reduced χ² ({:d} DOF): {:.1f}".format(rdict["n_dof"], rdict["red_chi2"]))
                 
                 if self.add_DLA:
                     rdict["dla_transm_chi2min"] = profiles_chi2min["dla_transmission"]
@@ -1068,7 +1069,7 @@ class IGM_DLA_solver():
                             diff = self.flux_list[oi] - observed_profiles["observed_spectrum{}".format(obs_ID)]
                             rdict["chi2{}_fixed_xHI{}".format(obs_ID, x_HI_key)] = self.get_chi2(diff=diff, flux_err=self.flux_err_list[oi])
                             if self.verbose:
-                                print("χ^2 of observation {:d} for fixed x_HI = {:.3g}: {:.1f}".format(oi+1, x_HI, rdict["chi2{}_fixed_xHI{}".format(obs_ID, x_HI_key)]))
+                                print("χ² of observation {:d} for fixed x_HI = {:.3g}: {:.1f}".format(oi+1, x_HI, rdict["chi2{}_fixed_xHI{}".format(obs_ID, x_HI_key)]))
                     # Reset values
                     self.restore_prior()
             

@@ -7,6 +7,8 @@ Joris Witstok, 2023
 """
 
 import numpy as np
+if not hasattr(np, "trapezoid"):
+    np.trapezoid = np.trapz
 
 # Import astropy cosmology
 from astropy.cosmology import FLRW, FlatLambdaCDM, z_at_value
